@@ -1,11 +1,17 @@
+#[cfg(all(target_os = "windows", feature = "win"))]
 use core::fmt;
+#[cfg(all(target_os = "windows", feature = "win"))]
 use std::env;
+#[cfg(all(target_os = "windows", feature = "win"))]
 use std::ffi::OsString;
+#[cfg(all(target_os = "windows", feature = "win"))]
 use std::{cell::RefCell, error::Error, rc::Rc};
+#[cfg(all(target_os = "windows", feature = "win"))]
 use std::{collections::HashMap, path::PathBuf};
 
+#[cfg(all(target_os = "windows", feature = "win"))]
 use shared_files::core_header;
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "win"))]
 use windows::{
     Win32::{
         Foundation::FreeLibrary,
@@ -15,6 +21,7 @@ use windows::{
     core::{PCSTR, PCWSTR},
 };
 
+#[cfg(all(target_os = "windows", feature = "win"))]
 #[derive(Debug, PartialEq, Eq)]
 enum ModuleError {
     FileSystemError(String),
@@ -23,6 +30,7 @@ enum ModuleError {
     CanceledExit(String),
 }
 
+#[cfg(all(target_os = "windows", feature = "win"))]
 impl fmt::Display for ModuleError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
@@ -44,14 +52,16 @@ impl fmt::Display for ModuleError {
     }
 }
 
+#[cfg(all(target_os = "windows", feature = "win"))]
 impl Error for ModuleError {}
 
+#[cfg(all(target_os = "windows", feature = "win"))]
 fn print_core(s: &str) {
     println!("{}", s);
     println!("Someone called this :O");
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "win"))]
 fn load_modules_windows(
     core: &core_header::CoreH,
     skip_modules: Option<Rc<Vec<OsString>>>,
@@ -101,7 +111,6 @@ fn load_modules_windows(
             continue;
         }
 
-        #[cfg(target_os = "windows")]
         match real_path.path().extension() {
             Some(data) => {
                 if data.to_ascii_lowercase() != "dll" {
@@ -199,7 +208,7 @@ fn load_modules_windows(
     return Ok(dll_table.clone());
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "win"))]
 fn unload_modules_windows(
     core: &mut core_header::CoreH,
     dll_table: Rc<RefCell<HashMap<PathBuf, HMODULE>>>,
@@ -250,7 +259,7 @@ fn unload_modules_windows(
     Ok(())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "win"))]
 fn main() {
     let args = Rc::new(env::args_os().collect::<Vec<_>>());
     println!("{:?}", args);
@@ -291,7 +300,7 @@ fn main() {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(all(target_os = "windows", feature="win")))]
 fn main() {
     println!("Currently the modules are only implemented for .dll files. Will change soon!");
 }

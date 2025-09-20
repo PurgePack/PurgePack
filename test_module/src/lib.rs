@@ -1,11 +1,13 @@
+#[cfg(all(target_os = "windows", feature = "win"))]
 use shared_files::core_header::{self, print_core};
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "win"))]
 use windows::{
     Win32::UI::WindowsAndMessaging::{MB_OK, MessageBoxW},
     core::PWSTR,
 };
 
+#[cfg(all(target_os = "windows", feature = "win"))]
 #[unsafe(no_mangle)]
 extern "system" fn module_startup(core: &core_header::CoreH) {
     print_core(core, "Hello from test module!");
@@ -29,8 +31,9 @@ extern "system" fn module_startup(core: &core_header::CoreH) {
     }
 }
 
+#[cfg(all(target_os = "windows", feature = "win"))]
 #[unsafe(no_mangle)]
-extern "system" fn module_shutdown(core: &mut core_header::CoreH, exiting: bool) {
+extern "system" fn module_shutdown(_core: &mut core_header::CoreH, _exiting: bool) {
     unsafe {
         let title = "Shutting down!";
         let message = "This message is from test module!";
