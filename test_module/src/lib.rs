@@ -1,4 +1,6 @@
 use shared_files::core_header::{self, print_core};
+
+#[cfg(target_os = "windows")]
 use windows::{
     Win32::UI::WindowsAndMessaging::{MB_OK, MessageBoxW},
     core::PWSTR,
@@ -28,7 +30,7 @@ extern "system" fn module_startup(core: &core_header::CoreH) {
 }
 
 #[unsafe(no_mangle)]
-extern "system" fn module_shutdown() {
+extern "system" fn module_shutdown(core: &mut core_header::CoreH, exiting: bool) {
     unsafe {
         let title = "Shutting down!";
         let message = "This message is from test module!";

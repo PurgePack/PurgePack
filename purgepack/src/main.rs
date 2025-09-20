@@ -5,7 +5,7 @@ use std::{cell::RefCell, error::Error, rc::Rc};
 use std::{collections::HashMap, path::PathBuf};
 
 use shared_files::core_header;
-#[cfg(windows)]
+#[cfg(target_os = "windows")]
 use windows::{
     Win32::{
         Foundation::FreeLibrary,
@@ -15,12 +15,12 @@ use windows::{
     core::{PCSTR, PCWSTR},
 };
 
-#[derive(Debug)]
-pub enum ModuleError {
+#[derive(Debug, PartialEq, Eq)]
+enum ModuleError {
     FileSystemError(String),
     AllModuleLoadError(String),
     AllModuleUnloadError(String),
-    ModuleUnloadError(String),
+    CanceledExit(String),
 }
 
 impl fmt::Display for ModuleError {
@@ -33,8 +33,12 @@ impl fmt::Display for ModuleError {
             ModuleError::AllModuleUnloadError(msg) => {
                 write!(f, "Failed to unload all modules: {}", msg)
             }
-            ModuleError::ModuleUnloadError(msg) => {
-                write!(f, "Failed to unload module: {}", msg)
+            ModuleError::CanceledExit(msg) => {
+                write!(
+                    f,
+                    "Failed to unload module because exiting is canceled: {}",
+                    msg
+                )
             }
         }
     }
@@ -47,9 +51,9 @@ fn print_core(s: &str) {
     println!("Someone called this :O");
 }
 
-#[cfg(windows)]
+#[cfg(target_os = "windows")]
 fn load_modules_windows(
-    core_header: &core_header::CoreH,
+    core: &core_header::CoreH,
     skip_modules: Option<Rc<Vec<OsString>>>,
 ) -> Result<Rc<RefCell<HashMap<PathBuf, HMODULE>>>, ModuleError> {
     use std::{collections::HashMap, fs, path::PathBuf};
@@ -97,7 +101,7 @@ fn load_modules_windows(
             continue;
         }
 
-        #[cfg(windows)]
+        #[cfg(target_os = "windows")]
         match real_path.path().extension() {
             Some(data) => {
                 if data.to_ascii_lowercase() != "dll" {
@@ -180,7 +184,7 @@ fn load_modules_windows(
             let startup_fn: extern "system" fn(core: &core_header::CoreH) =
                 std::mem::transmute(func_ptr);
 
-            startup_fn(&core_header);
+            startup_fn(&core);
 
             dll_table
                 .borrow_mut()
@@ -195,13 +199,15 @@ fn load_modules_windows(
     return Ok(dll_table.clone());
 }
 
-#[cfg(windows)]
+#[cfg(target_os = "windows")]
 fn unload_modules_windows(
+    core: &mut core_header::CoreH,
     dll_table: Rc<RefCell<HashMap<PathBuf, HMODULE>>>,
+    exiting: bool,
 ) -> Result<(), ModuleError> {
     let mut failed_modules: usize = 0;
 
-    for (module_path, handle) in dll_table.borrow().iter() {
+    for (_module_path, handle) in dll_table.borrow().iter() {
         unsafe {
             let func_name_c =
                 std::ffi::CString::new("module_shutdown").expect("CString::new failed");
@@ -213,10 +219,19 @@ fn unload_modules_windows(
                 continue;
             }
 
-            let shutdown_fn: extern "system" fn() = std::mem::transmute(func_ptr);
+            let shutdown_fn: extern "system" fn(core: &mut core_header::CoreH, exiting: bool) =
+                std::mem::transmute(func_ptr);
 
-            shutdown_fn();
+            shutdown_fn(core, exiting);
 
+            if core.cancel_exit && exiting {
+                return Err(ModuleError::CanceledExit(format!("Canceled exit!")));
+            }
+        }
+    }
+
+    for (module_path, handle) in dll_table.borrow().iter() {
+        unsafe {
             if let Err(msg) = FreeLibrary(*handle) {
                 failed_modules += 1;
                 println!("Failed to unload library {:?}: {:?}", module_path, msg);
@@ -224,6 +239,7 @@ fn unload_modules_windows(
             }
         }
     }
+
     if failed_modules == dll_table.borrow().len() {
         return Err(ModuleError::AllModuleUnloadError(format!(
             "All modules failed to unload!"
@@ -234,20 +250,22 @@ fn unload_modules_windows(
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
 fn main() {
     let args = Rc::new(env::args_os().collect::<Vec<_>>());
     println!("{:?}", args);
 
     let msg = Rc::new(RefCell::new(String::new()));
 
-    let core_header = core_header::CoreH {
+    let mut core_header = core_header::CoreH {
         print_fn: print_core,
         args: args.clone(),
         message_received: msg.clone(),
+        cancel_exit: false,
     };
 
     let modules;
-    match load_modules_windows(&core_header, Some(args)) {
+    match load_modules_windows(&mut core_header, Some(args)) {
         Ok(data) => modules = data,
         Err(msg) => {
             println!("{:?}", msg);
@@ -255,8 +273,25 @@ fn main() {
         }
     }
 
-    if let Err(msg) = unload_modules_windows(modules) {
+    if let Err(msg) = unload_modules_windows(&mut core_header, modules.clone(), true) {
         println!("{:?}", msg);
+        if std::mem::discriminant(&msg)
+            != std::mem::discriminant(&ModuleError::CanceledExit(format!("")))
+        {
+            return;
+        }
+    } else {
         return;
     }
+
+    // For now, this loop will immediately exit if no modules cancel.
+
+    loop {
+        // Do main loop
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn main() {
+    println!("Currently the modules are only implemented for .dll files. Will change soon!");
 }
