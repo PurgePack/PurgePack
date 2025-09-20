@@ -4,5 +4,12 @@
 			"path": "."
 		}
 	],
-	"settings": {}
+	"settings": {
+		"rust-analyzer.linkedProjects": [
+			"./",
+			"./purgepack/Cargo.toml",
+			"./test_module/Cargo.toml",
+			"./shared_files/Cargo.toml"
+		]
+	}
 }

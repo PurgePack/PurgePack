@@ -1,6 +1,6 @@
-[package]
-name = "purgepack"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
+[workspace]
+resolver = "3"
+members = [
+    "purgepack",
+    "test_module",
+]
