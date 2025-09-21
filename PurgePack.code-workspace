@@ -10,7 +10,7 @@
 			"./purgepack/Cargo.toml",
 			"./test_module/Cargo.toml",
 			"./shared_files/Cargo.toml",
-			"./Rls_module/Cargo.toml"
+			"./rls_module/Cargo.toml"
 		],
 		"rust-analyzer.cargo.features": "all"
 	}
