@@ -236,6 +236,9 @@ fn unload_modules_windows(
             if core.cancel_exit && exiting {
                 return Err(ModuleError::CanceledExit(format!("Canceled exit!")));
             }
+            else if core.cancel_exit {
+                core.cancel_exit = false;
+            }
         }
     }
 
@@ -281,6 +284,8 @@ fn main() {
             return;
         }
     }
+
+    println!("{}", core_header.message_received.borrow());
 
     if let Err(msg) = unload_modules_windows(&mut core_header, modules.clone(), true) {
         println!("{:?}", msg);
