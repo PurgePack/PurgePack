@@ -235,8 +235,7 @@ fn unload_modules_windows(
 
             if core.cancel_exit && exiting {
                 return Err(ModuleError::CanceledExit(format!("Canceled exit!")));
-            }
-            else if core.cancel_exit {
+            } else if core.cancel_exit {
                 core.cancel_exit = false;
             }
         }
@@ -305,7 +304,7 @@ fn main() {
     }
 }
 
-#[cfg(not(all(target_os = "windows", feature="win")))]
+#[cfg(not(all(target_os = "windows", feature = "win")))]
 fn main() {
     println!("Currently the modules are only implemented for .dll files. Will change soon!");
 }

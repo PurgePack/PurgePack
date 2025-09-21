@@ -29,6 +29,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rls_module"
+version = "0.1.0"
+dependencies = [
+ "shared_files",
+]
+
+[[package]]
 name = "shared_files"
 version = "0.1.0"
 

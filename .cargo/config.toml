@@ -1,7 +1,4 @@
-paths = [
-    "purgepack",
-    "test_module"
-]
+paths = ["purgepack", "test_module", "rls_module"]
 
 [alias]
 b = "build"
