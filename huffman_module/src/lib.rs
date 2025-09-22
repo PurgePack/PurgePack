@@ -30,7 +30,7 @@ fn calculate_byte_frequencies(b: &Vec<u8>) -> IndexMap<u8, u32> {
     chars_frequency_map
 }
 
-fn generate_huffman_tree(chars_frequency_map: &IndexMap<u8, u32>) -> Vec<Rc<Node>> {
+fn generate_huffman_tree(chars_frequency_map: &IndexMap<u8, u32>) -> Rc<Node> {
     let mut huffman_tree: Vec<Rc<Node>> = Vec::new();
 
     for i in chars_frequency_map.iter() {
@@ -65,7 +65,7 @@ fn generate_huffman_tree(chars_frequency_map: &IndexMap<u8, u32>) -> Vec<Rc<Node
         );
     }
 
-    huffman_tree
+    huffman_tree.first().unwrap().clone()
 }
 
 fn generate_char_codes(root: Rc<Node>) -> Vec<(u8, Vec<u8>)> {
@@ -109,48 +109,43 @@ extern "system" fn module_startup(core: &core_header::CoreH) {
     let debug_timer = Instant::now();
 
     let mut buffer: Vec<u8> = Vec::new();
-    let mut str_to_compress_file;
+    let mut file_to_compress;
 
     match File::open(core.args[1].clone()) {
-        Ok(file) => str_to_compress_file = file,
+        Ok(file) => file_to_compress = file,
         Err(msg) => {
-            println!("Error: {}", msg);
+            println!("Error: {:?}", msg);
             return;
         },
     }
     
-    if let Err(msg) = str_to_compress_file.read_to_end(&mut buffer) {
-        println!("Error: {}", msg);
+    if let Err(msg) = file_to_compress.read_to_end(&mut buffer) {
+        println!("Error: {:?}", msg);
         return;
     }
 
-    //let str_to_compress = str::from_utf8(&buffer).unwrap();
-    // let mut str_to_compress: String = String::new();
-    // for bit in buffer.iter() {
-    //     str_to_compress.push_str(&format!("{:08b}", bit));
-    // }
-
     let chars_frequency_map = calculate_byte_frequencies(&buffer);
-
     let huffman_tree = generate_huffman_tree(&chars_frequency_map);
 
     let mut debug_file;
-    let mut comp_path_deb = core.args[2].clone();
-    comp_path_deb.push("/debug.txt");
+    let mut debug_file_path = core.args[2].clone();
+    debug_file_path.push("/debug.txt");
 
-    match File::create(comp_path_deb) {
+    match File::create(debug_file_path) {
         Ok(data) => debug_file = data,
         Err(msg) => {
-            println!("Error: {}", msg);
+            println!("Error: {:?}", msg);
             return;
         },
     }
-
-    debug_file.write(format!("{:#?}", huffman_tree).as_bytes());
+    
+    if let Err(msg) = debug_file.write(format!("{:#?}", huffman_tree).as_bytes()) {
+        println!("Error: {:?}", msg);
+    }
 
     // get char codes
 
-    let char_codes = generate_char_codes(huffman_tree[0].clone());
+    let char_codes = generate_char_codes(huffman_tree);
 
     // compress string
 
