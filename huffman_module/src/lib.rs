@@ -2,13 +2,13 @@ use bit_buffers::{BitReader, BitWriter};
 use indexmap::IndexMap;
 use shared_files::core_header::{self};
 use std::{
-    cmp::Reverse, collections::BinaryHeap, fs::File, io::{self, Read, Write}, rc::Rc, time::Instant
+    cmp::Reverse, collections::BinaryHeap, fs::File, io::{self, Read, Write}, time::Instant
 };
 
 #[derive(Debug, Eq)]
 struct Node {
-    left: Option<Rc<Node>>,
-    right: Option<Rc<Node>>,
+    left: Option<Box<Node>>,
+    right: Option<Box<Node>>,
     num: Option<u32>,
     byte: Option<u8>,
 }
@@ -48,18 +48,18 @@ fn calculate_byte_frequencies(b: &Vec<u8>) -> IndexMap<u8, u32> {
     chars_frequency_map
 }
 
-fn generate_huffman_tree(chars_frequency_map: &IndexMap<u8, u32>) -> Rc<Node> {
+fn generate_huffman_tree(bytes_frequency_map: &IndexMap<u8, u32>) -> Box<Node> {
     let mut huffman_tree = BinaryHeap::new();
 
-    for i in chars_frequency_map.iter() {
+    for (byte, frequency) in bytes_frequency_map.iter() {
         huffman_tree.push(
             Reverse(
-                Rc::new(
+                Box::new(
                     Node {
                         left: (None),
                         right: (None),
-                        num: Some(i.1.clone()),
-                        byte: Some(i.0.clone()),
+                        num: Some(*frequency),
+                        byte: Some(*byte),
                     }
                 )
             )
@@ -72,11 +72,11 @@ fn generate_huffman_tree(chars_frequency_map: &IndexMap<u8, u32>) -> Rc<Node> {
 
         huffman_tree.push(
             Reverse(
-                Rc::new(
+                Box::new(
                     Node {
-                        left: Some(node1.0.clone()),
-                        right: Some(node2.0.clone()),
                         num: Some(node1.0.num.unwrap() + node2.0.num.unwrap()),
+                        left: Some(node1.0),
+                        right: Some(node2.0),
                         byte: None,
                     }
                 )
@@ -87,17 +87,17 @@ fn generate_huffman_tree(chars_frequency_map: &IndexMap<u8, u32>) -> Rc<Node> {
     huffman_tree.pop().unwrap().0
 }
 
-fn generate_byte_codes(root: Rc<Node>) -> IndexMap<u8, Vec<u8>> {
+fn generate_byte_codes(root: &Node) -> IndexMap<u8, Vec<u8>> {
     let mut codes = IndexMap::new();
 
     generate_char_codes_internal(
-        root.left.as_ref().unwrap().clone(),
+        root.left.as_ref().unwrap(),
         vec![0],
         &mut codes,
     );
 
     generate_char_codes_internal(
-        root.right.as_ref().unwrap().clone(),
+        root.right.as_ref().unwrap(),
         vec![1],
         &mut codes,
     );
@@ -106,7 +106,7 @@ fn generate_byte_codes(root: Rc<Node>) -> IndexMap<u8, Vec<u8>> {
 }
 
 fn generate_char_codes_internal(
-    root: Rc<Node>,
+    root: &Node,
     mut current_code: Vec<u8>,
     codes: &mut IndexMap<u8, Vec<u8>>,
 ) {
@@ -116,25 +116,25 @@ fn generate_char_codes_internal(
     }
 
     current_code.push(0);
-    generate_char_codes_internal(root.left.as_ref().unwrap().clone(), current_code.clone(), codes);
+    generate_char_codes_internal(root.left.as_ref().unwrap(), current_code.clone(), codes);
 
     current_code.pop();
     current_code.push(1);
-    generate_char_codes_internal(root.right.as_ref().unwrap().clone(), current_code.clone(), codes);
+    generate_char_codes_internal(root.right.as_ref().unwrap(), current_code.clone(), codes);
 }
 
 fn compress(buffer: &Vec<u8>, byte_codes: &IndexMap<u8, Vec<u8>>) -> Vec<u8> {
-    let mut compressed_bytes = Vec::new();
+    let mut compressed_bits = Vec::new();
 
     for byte in buffer.iter() {
         if let Some(code) = byte_codes.get(byte) {
             for bit in code {
-                compressed_bytes.push(*bit);
+                compressed_bits.push(*bit);
             }
         }
     }
 
-    compressed_bytes
+    compressed_bits
 }
 
 fn write_data(
@@ -305,7 +305,7 @@ extern "system" fn module_startup(core: &core_header::CoreH) {
     let chars_frequency_map = calculate_byte_frequencies(&buffer);
     println!("Calculated frequency: {:.2?}", debug_timer.elapsed());
     debug_timer = Instant::now();
-    let huffman_tree = generate_huffman_tree(&chars_frequency_map);
+    let root_node = generate_huffman_tree(&chars_frequency_map);
     println!("Calculated huffman tree: {:.2?}", debug_timer.elapsed());
     debug_timer = Instant::now();
 
@@ -325,17 +325,17 @@ extern "system" fn module_startup(core: &core_header::CoreH) {
     //     println!("Error: {:?}", msg);
     // }
 
-    let byte_codes = generate_byte_codes(huffman_tree);
+    let byte_codes = generate_byte_codes(&root_node);
     println!("Calculated byte codes: {:.2?}", debug_timer.elapsed());
     debug_timer = Instant::now();
-    let compressed_bytes_string = compress(&buffer, &byte_codes);
+    let compressed_bits = compress(&buffer, &byte_codes);
     println!("Calculated compressed bytes: {:.2?}", debug_timer.elapsed());
     debug_timer = Instant::now();
 
     let mut comp_path = core.args[2].clone();
     comp_path.push("/compressed.purgepack");
 
-    write_data(&byte_codes, &compressed_bytes_string, comp_path.to_str().unwrap());
+    write_data(&byte_codes, &compressed_bits, comp_path.to_str().unwrap());
     println!("Wrote data: {:.2?}", debug_timer.elapsed());
     debug_timer = Instant::now();
 
@@ -368,7 +368,22 @@ extern "system" fn module_startup(core: &core_header::CoreH) {
     }
     println!("Written read data: {:.2?}", debug_timer.elapsed());
 
+    let compressed_file;
+    match File::open(comp_path) {
+        Ok(file) => compressed_file = file,
+        Err(msg) => {
+            println!("Error: {:?}", msg);
+            return;
+        },
+    }
+
     println!("Elapsed: {:.2?}", debug_whole_timer.elapsed());
+    println!("Original size: {} bytes", buffer.len());
+    println!("Compressed size: {} bits", compressed_bits.len());
+    println!(
+        "Compressed size compared to original: {}%",
+        (compressed_file.metadata().unwrap().len() as f32 / buffer.len() as f32) * 100.0
+    );
 }
 
 #[unsafe(no_mangle)]
