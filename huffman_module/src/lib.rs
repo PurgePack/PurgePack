@@ -194,7 +194,7 @@ fn bits_to_bytes(bits: &[u8]) -> Vec<u8> {
             if bit != 0 && bit != 1 {
                 panic!("Invalid bit: {bit}");
             }
-            byte |= bit << (7 - i); // MSB first
+            byte |= bit << (7 - i);
         }
         bytes.push(byte);
     }
