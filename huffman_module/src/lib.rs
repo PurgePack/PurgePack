@@ -401,7 +401,7 @@ fn canonical_huffman(core: &core_header::CoreH) {
     println!("Read data: {:.2?}", debug_timer.elapsed());
     debug_timer = Instant::now();
 
-    println!("{:?}", buffer == back_buffer);
+    println!("Does the decompressed file matching?: {}", buffer == back_buffer);
 
     let res_path = core.args[3].clone();
     let mut result;
