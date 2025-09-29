@@ -3,16 +3,9 @@
 version = 4
 
 [[package]]
-name = "bit_buffers"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "978c4c0deb777ff8b7e18bb4d304516317b652af292e0fb545497523670c3149"
-
-[[package]]
 name = "huffman_module"
 version = "0.1.0"
 dependencies = [
- "bit_buffers",
  "shared_files",
 ]
 

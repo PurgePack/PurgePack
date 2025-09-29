@@ -1,14 +1,86 @@
-use bit_buffers::{BitReader, BitWriter};
 use shared_files::core_header::{self};
 use std::{
     cmp::Reverse, collections::BinaryHeap, fs::File, io::{self, Read, Write}, time::Instant
 };
 
+struct SimpleBitWriter {
+    buffer: Vec<u8>,
+    current_byte: u8,
+    bit_pos: u8,
+}
+
+impl SimpleBitWriter {
+    fn new() -> Self {
+        Self {
+            buffer: Vec::new(),
+            current_byte: 0,
+            bit_pos: 0,
+        }
+    }
+
+    fn write_bit(&mut self, bit: u8) {
+        if bit != 0 { self.current_byte |= 1 << (7 - self.bit_pos); }
+        self.bit_pos += 1;
+        if self.bit_pos == 8 {
+            self.buffer.push(self.current_byte);
+            self.current_byte = 0;
+            self.bit_pos = 0;
+        }
+    }
+
+    fn write_bits(&mut self, bits: &[u8]) {
+        for &b in bits { self.write_bit(b); }
+    }
+
+    fn flush(&mut self) {
+        if self.bit_pos > 0 {
+            self.buffer.push(self.current_byte);
+            self.current_byte = 0;
+            self.bit_pos = 0;
+        }
+    }
+
+    fn flush_to_file(&mut self, path: &str) {
+        self.flush();
+        std::fs::write(path, &self.buffer).expect("Failed to write file");
+    }
+}
+
+struct SimpleBitReader {
+    buffer: Vec<u8>,
+    byte_pos: usize,
+    bit_pos: u8,
+}
+
+impl SimpleBitReader {
+    fn new() -> Self {
+        Self { buffer: Vec::new(), byte_pos: 0, bit_pos: 0 }
+    }
+
+    fn load_from_file(&mut self, path: &str) -> io::Result<()> {
+        self.buffer = std::fs::read(path)?;
+        self.byte_pos = 0;
+        self.bit_pos = 0;
+        Ok(())
+    }
+
+    fn read_bit(&mut self) -> Option<u8> {
+        if self.byte_pos >= self.buffer.len() { return None; }
+        let bit = (self.buffer[self.byte_pos] >> (7 - self.bit_pos)) & 1;
+        self.bit_pos += 1;
+        if self.bit_pos == 8 {
+            self.bit_pos = 0;
+            self.byte_pos += 1;
+        }
+        Some(bit)
+    }
+}
+
 #[derive(Debug)]
 struct DecodeNode {
     left: Option<Box<DecodeNode>>,
     right: Option<Box<DecodeNode>>,
-    byte: Option<u8>, // Some if leaf
+    byte: Option<u8>,
 }
 
 impl DecodeNode {
@@ -146,33 +218,22 @@ fn generate_byte_codes(root: &Node) -> Vec<Vec<u8>> {
         }
     }
 
-    // Start traversal with empty path
     traverse(root, Vec::new(), &mut codes);
 
     codes
 }
 
 fn bits_to_bytes(bits: &[u8]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity((bits.len() + 7) / 8);
-
-    for chunk in bits.chunks(8) {
-        let mut byte = 0u8;
-        for (i, &bit) in chunk.iter().enumerate() {
-            if bit != 0 && bit != 1 {
-                panic!("Invalid bit: {bit}");
-            }
-            byte |= bit << (7 - i);
-        }
-        bytes.push(byte);
+    let mut bytes = vec![0u8; (bits.len() + 7) / 8];
+    for (i, &bit) in bits.iter().enumerate() {
+        if bit != 0 { bytes[i / 8] |= 1 << (7 - (i % 8)); }
     }
-
     bytes
 }
 
 fn generate_canonical_codes(byte_length_pairs: &[(u8, usize)]) -> [Option<Vec<u8>>; 256] {
     let mut codes: [Option<Vec<u8>>; 256] = std::array::from_fn(|_| None);
 
-    // Sort by (length, byte value)
     let mut sorted = byte_length_pairs.to_vec();
     sorted.sort_by(|a, b| {
         let len_cmp = a.1.cmp(&b.1);
@@ -215,91 +276,63 @@ fn write_data_canonical(
     compressed_bits: &[u8],
     output_path: &str,
 ) {
-    let mut writer = BitWriter::new();
+    let mut writer = SimpleBitWriter::new();
 
-    // Write table length (u32)
     let table_len = byte_lengths.len() as u32;
     for i in (0..32).rev() {
         writer.write_bit(((table_len >> i) & 1) as u8);
     }
 
-    // Write compressed data length (u32)
     let data_len = compressed_bits.len() as u32;
     for i in (0..32).rev() {
         writer.write_bit(((data_len >> i) & 1) as u8);
     }
 
-    // Write byte-length table
     for &(byte, length) in byte_lengths {
-        // Byte
         for i in (0..8).rev() {
             writer.write_bit((byte >> i) & 1);
         }
-        // Length as u8
         let len_u8 = length as u8;
         for i in (0..8).rev() {
             writer.write_bit((len_u8 >> i) & 1);
         }
     }
 
-    // Write compressed bits
-    for &bit in compressed_bits {
-        writer.write_bit(bit);
-    }
-
+    writer.write_bits(compressed_bits);
     writer.flush_to_file(output_path);
 }
 
 fn read_data_canonical(output_path: &str) -> io::Result<Vec<u8>> {
-    let mut reader = BitReader::new();
+    let mut reader = SimpleBitReader::new();
     reader.load_from_file(output_path)?;
 
-    let mut bits = Vec::new();
+    let mut table_len_bits = Vec::new();
+    for _ in 0..32 { table_len_bits.push(reader.read_bit().unwrap()); }
+    let table_len = u32::from_be_bytes(bits_to_bytes(&table_len_bits).try_into().unwrap());
 
-    // Table length
-    for _ in 0..32 {
-        bits.push(reader.read_bit().unwrap());
-    }
-    let table_len = u32::from_be_bytes(bits_to_bytes(&bits).try_into().unwrap());
-    bits.clear();
+    let mut data_len_bits = Vec::new();
+    for _ in 0..32 { data_len_bits.push(reader.read_bit().unwrap()); }
+    let data_len = u32::from_be_bytes(bits_to_bytes(&data_len_bits).try_into().unwrap());
 
-    // Data bit length
-    for _ in 0..32 {
-        bits.push(reader.read_bit().unwrap());
-    }
-    let data_len = u32::from_be_bytes(bits_to_bytes(&bits).try_into().unwrap());
-    bits.clear();
-
-    // Read byte-length table
     let mut byte_lengths = Vec::with_capacity(table_len as usize);
     for _ in 0..table_len {
-        // Byte
-        for _ in 0..8 {
-            bits.push(reader.read_bit().unwrap());
-        }
-        let byte = u8::from_be_bytes(bits_to_bytes(&bits).try_into().unwrap());
-        bits.clear();
+        let mut byte_bits = Vec::new();
+        for _ in 0..8 { byte_bits.push(reader.read_bit().unwrap()); }
+        let byte = u8::from_be_bytes(bits_to_bytes(&byte_bits).try_into().unwrap());
 
-        // Length
-        for _ in 0..8 {
-            bits.push(reader.read_bit().unwrap());
-        }
-        let length = u8::from_be_bytes(bits_to_bytes(&bits).try_into().unwrap()) as usize;
-        bits.clear();
+        let mut len_bits = Vec::new();
+        for _ in 0..8 { len_bits.push(reader.read_bit().unwrap()); }
+        let length = u8::from_be_bytes(bits_to_bytes(&len_bits).try_into().unwrap()) as usize;
 
         byte_lengths.push((byte, length));
     }
 
-    // Rebuild canonical codes
     let codes: [Option<Vec<u8>>; 256] = generate_canonical_codes(&byte_lengths);
 
-    // Read compressed bits
     let mut compressed_bits = Vec::with_capacity(data_len as usize);
     for _ in 0..data_len {
         compressed_bits.push(reader.read_bit().unwrap());
     }
-
-    // Build decoding tree
     let decoding_root = build_decoding_tree(&codes);
     Ok(decode_canonical(&compressed_bits, &decoding_root))
 }
