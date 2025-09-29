@@ -1,9 +1,61 @@
 use bit_buffers::{BitReader, BitWriter};
-use indexmap::IndexMap;
 use shared_files::core_header::{self};
 use std::{
-    cmp::Reverse, collections::BinaryHeap, ffi::OsString, fs::File, io::{self, Read, Write}, time::Instant
+    cmp::Reverse, collections::BinaryHeap, fs::File, io::{self, Read, Write}, time::Instant
 };
+
+#[derive(Debug)]
+struct DecodeNode {
+    left: Option<Box<DecodeNode>>,
+    right: Option<Box<DecodeNode>>,
+    byte: Option<u8>, // Some if leaf
+}
+
+impl DecodeNode {
+    fn new() -> Self {
+        DecodeNode { left: None, right: None, byte: None }
+    }
+
+    fn insert(&mut self, code: &[u8], byte: u8) {
+        let mut node = self;
+        for &bit in code {
+            node = if bit == 0 {
+                node.left.get_or_insert_with(|| Box::new(DecodeNode::new()))
+            } else {
+                node.right.get_or_insert_with(|| Box::new(DecodeNode::new()))
+            };
+        }
+        node.byte = Some(byte);
+    }
+}
+
+fn build_decoding_tree(codes: &[Option<Vec<u8>>; 256]) -> DecodeNode {
+    let mut root = DecodeNode::new();
+    
+    for (byte, code_opt) in codes.iter().enumerate() {
+        if let Some(code) = code_opt {
+            root.insert(code, byte as u8);
+        }
+    }
+
+    root
+}
+
+fn decode_canonical(bits: &[u8], root: &DecodeNode) -> Vec<u8> {
+    let mut result = Vec::new();
+    let mut node = root;
+
+    for &bit in bits {
+        node = if bit == 0 { node.left.as_ref().unwrap() } else { node.right.as_ref().unwrap() };
+
+        if let Some(b) = node.byte {
+            result.push(b);
+            node = root;
+        }
+    }
+
+    result
+}
 
 #[derive(Debug, Eq)]
 struct Node {
@@ -31,96 +83,73 @@ impl Ord for Node {
     }
 }
 
-fn calculate_byte_frequencies(b: &Vec<u8>) -> IndexMap<u8, u32> {
-    let mut chars_frequency_map: IndexMap<u8, u32> = IndexMap::new();
+fn calculate_byte_frequencies(buffer: &Vec<u8>) -> [u32; 256] {
+    let mut frequencies = [0u32; 256];
+    for &byte in buffer.iter() {
+        frequencies[byte as usize] += 1;
+    }
+    frequencies
+}
 
-    for byte in b.iter() {
-        if !chars_frequency_map.contains_key(byte) {
-            chars_frequency_map.insert(*byte, 1);
-        }
-        else {
-            *chars_frequency_map.get_mut(byte).unwrap() += 1;
+fn generate_huffman_tree(frequencies: &[u32; 256]) -> Box<Node> {
+    let mut heap = BinaryHeap::new();
+
+    for (byte, &freq) in frequencies.iter().enumerate() {
+        if freq > 0 {
+            heap.push(
+                Reverse(Box::new(Node {
+                    left: None,
+                    right: None,
+                    num: Some(freq),
+                    byte: Some(byte as u8),
+                })),
+            );
         }
     }
 
-    chars_frequency_map.sort_by(|_a, b, _c, d| b.cmp(d));
+    while heap.len() > 1 {
+        let node1 = heap.pop().unwrap();
+        let node2 = heap.pop().unwrap();
 
-    chars_frequency_map
-}
-
-fn generate_huffman_tree(bytes_frequency_map: &IndexMap<u8, u32>) -> Box<Node> {
-    let mut huffman_tree = BinaryHeap::new();
-
-    for (byte, frequency) in bytes_frequency_map.iter() {
-        huffman_tree.push(
-            Reverse(
-                Box::new(
-                    Node {
-                        left: (None),
-                        right: (None),
-                        num: Some(*frequency),
-                        byte: Some(*byte),
-                    }
-                )
-            )
+        heap.push(
+            Reverse(Box::new(Node {
+                num: Some(node1.0.num.unwrap() + node2.0.num.unwrap()),
+                left: Some(node1.0),
+                right: Some(node2.0),
+                byte: None,
+            })),
         );
     }
 
-    while huffman_tree.len() > 1 {
-        let node1 = huffman_tree.pop().unwrap();
-        let node2 = huffman_tree.pop().unwrap();
-
-        huffman_tree.push(
-            Reverse(
-                Box::new(
-                    Node {
-                        num: Some(node1.0.num.unwrap() + node2.0.num.unwrap()),
-                        left: Some(node1.0),
-                        right: Some(node2.0),
-                        byte: None,
-                    }
-                )
-            )
-        );
-    }
-
-    huffman_tree.pop().unwrap().0
+    heap.pop().unwrap().0
 }
 
-fn generate_byte_codes(root: &Node) -> IndexMap<u8, Vec<u8>> {
-    let mut codes = IndexMap::new();
+fn generate_byte_codes(root: &Node) -> Vec<Vec<u8>> {
+    let mut codes = vec![Vec::new(); 256];
 
-    generate_char_codes_internal(
-        root.left.as_ref().unwrap(),
-        vec![0],
-        &mut codes,
-    );
+    fn traverse(node: &Node, current: Vec<u8>, codes: &mut Vec<Vec<u8>>) {
+        if let Some(b) = node.byte {
+            codes[b as usize] = current;
+            return;
+        }
 
-    generate_char_codes_internal(
-        root.right.as_ref().unwrap(),
-        vec![1],
-        &mut codes,
-    );
+        if let Some(ref left) = node.left {
+            let mut left_code = current.clone();
+            left_code.push(0);
+            traverse(left, left_code, codes);
+        }
+
+        if let Some(ref right) = node.right {
+            let mut right_code = current.clone();
+            right_code.push(1);
+            traverse(right, right_code, codes);
+        }
+    }
+
+    // Start traversal with empty path
+    traverse(root, Vec::new(), &mut codes);
 
     codes
-}
-
-fn generate_char_codes_internal(
-    root: &Node,
-    mut current_code: Vec<u8>,
-    codes: &mut IndexMap<u8, Vec<u8>>,
-) {
-    if root.byte != None {
-        codes.insert(root.byte.unwrap(), current_code.clone());
-        return;
-    }
-
-    current_code.push(0);
-    generate_char_codes_internal(root.left.as_ref().unwrap(), current_code.clone(), codes);
-
-    current_code.pop();
-    current_code.push(1);
-    generate_char_codes_internal(root.right.as_ref().unwrap(), current_code.clone(), codes);
 }
 
 fn bits_to_bytes(bits: &[u8]) -> Vec<u8> {
@@ -140,189 +169,41 @@ fn bits_to_bytes(bits: &[u8]) -> Vec<u8> {
     bytes
 }
 
-fn compress(buffer: &Vec<u8>, byte_codes: &IndexMap<u8, Vec<u8>>) -> Vec<u8> {
-    let mut compressed_bits = Vec::new();
-
-    for byte in buffer.iter() {
-        if let Some(code) = byte_codes.get(byte) {
-            for bit in code {
-                compressed_bits.push(*bit);
-            }
-        }
-    }
-
-    compressed_bits
-}
-
-fn write_data(
-    byte_codes: &IndexMap<u8, Vec<u8>>,
-    compressed_bytes: &Vec<u8>,
-    output_path: &str
-) {
-    let mut writer = BitWriter::new();
-
-    // Header.
-    let code_table_length: u32 = byte_codes.len() as u32;
-    let data_bit_length: u32 = compressed_bytes.len() as u32;
-
-    // Code table length.
-    for i in (0..32).rev() {
-        writer.write_bit(((code_table_length >> i) & 1) as u8);
-    }
-
-    // Data length.
-    for i in (0..32).rev() {
-        writer.write_bit(((data_bit_length >> i) & 1) as u8);
-    }
-
-    // Write table.
-    for byte_code in byte_codes.iter() {
-        // Byte.
-        for i in (0..8).rev() {
-            writer.write_bit((*byte_code.0 >> i) & 1);
-        }
-
-        // Code length.
-        let code_length: u32 = byte_code.1.len() as u32;
-        for i in (0..32).rev() {
-            writer.write_bit(((code_length >> i) & 1) as u8);
-        }
-
-        // Code.
-        for byte in byte_code.1.iter() {
-            writer.write_bit(*byte);
-        }
-    }
-
-    // Write data.
-    for byte in compressed_bytes.iter() {
-        writer.write_bit(*byte);
-    }
-
-    writer.flush_to_file(output_path);
-}
-
-fn read_data(output_path: &str) -> io::Result<Vec<u8>> {
-    let mut reader = BitReader::new();
-    reader.load_from_file(output_path)?;
-
-    let mut bits = Vec::new();
-
-    // Read code table length.
-    for _i in 0..32 {
-        bits.push(reader.read_bit().unwrap());
-    }
-
-    let code_length = u32::from_be_bytes(bits_to_bytes(&bits).try_into().unwrap());
-    bits.clear();
-
-    // Read data length.
-    for _i in 0..32 {
-        bits.push(reader.read_bit().unwrap());
-    }
-
-    let data_length = u32::from_be_bytes(bits_to_bytes(&bits).try_into().unwrap());
-    bits.clear();
-
-    // Read byte codes table.
-    let mut byte_codes: IndexMap<Vec<u8>, u8> = IndexMap::new();
-
-    for _i in 0..code_length {
-        // Read byte.
-        for _i in 0..8 {
-            bits.push(reader.read_bit().unwrap());
-        }
-
-        let byte_bits: Vec<u8> = bits.clone();
-        bits.clear();
-
-        // Read code length.
-        for _i in 0..32 {
-            bits.push(reader.read_bit().unwrap());
-        }
-
-        let code_len = u32::from_be_bytes(bits_to_bytes(&bits).try_into().unwrap());
-        bits.clear();
-
-        // Read code.
-        for _i in 0..code_len {
-            bits.push(reader.read_bit().unwrap());
-        }
-
-        let code_bits: Vec<u8> = bits.clone();
-
-        byte_codes.insert(
-            code_bits,
-            u8::from_be_bytes(bits_to_bytes(&byte_bits).try_into().unwrap())
-        );
-        bits.clear();
-    }
-    bits.clear();
-
-    // Read data.
-    for _i in 0..data_length {
-        bits.push(reader.read_bit().unwrap());
-    }
-
-    let mut back_buffer: Vec<u8> = Vec::new();
-    let mut check_byte_read: Vec<u8> = Vec::new();
-
-    for bit in bits.iter() {
-        check_byte_read.push(*bit);
-
-        if let Some(byte) = byte_codes.get(&check_byte_read) {
-            back_buffer.push(*byte);
-            check_byte_read.clear();
-        }
-    }
-
-    Ok(back_buffer)
-}
-
-fn generate_canonical_codes(byte_length_pairs: &Vec<(u8, usize)>) -> IndexMap<u8, Vec<u8>> {
-    let mut canonical_codes = IndexMap::new();
+fn generate_canonical_codes(byte_length_pairs: &[(u8, usize)]) -> [Option<Vec<u8>>; 256] {
+    let mut codes: [Option<Vec<u8>>; 256] = std::array::from_fn(|_| None);
 
     // Sort by (length, byte value)
-    let mut sorted_pairs = byte_length_pairs.clone();
-    sorted_pairs.sort_by(|a, b| {
+    let mut sorted = byte_length_pairs.to_vec();
+    sorted.sort_by(|a, b| {
         let len_cmp = a.1.cmp(&b.1);
-        if len_cmp == std::cmp::Ordering::Equal {
-            a.0.cmp(&b.0)
-        } else {
-            len_cmp
-        }
+        if len_cmp == std::cmp::Ordering::Equal { a.0.cmp(&b.0) } else { len_cmp }
     });
 
     let mut current_code: u32 = 0;
     let mut prev_length: usize = 0;
 
-    for (byte, length) in sorted_pairs {
-        // Shift left if the length increased
+    for &(byte, length) in &sorted {
         current_code <<= length - prev_length;
 
-        // Build the canonical code as a bit vector
         let mut canonical_code = Vec::with_capacity(length);
         for i in (0..length).rev() {
             canonical_code.push(((current_code >> i) & 1) as u8);
         }
 
-        canonical_codes.insert(byte, canonical_code);
-
+        codes[byte as usize] = Some(canonical_code);
         current_code += 1;
         prev_length = length;
     }
 
-    canonical_codes
+    codes
 }
 
-fn compress_canonical(buffer: &Vec<u8>, byte_canonical_codes: &IndexMap<u8, Vec<u8>>) -> Vec<u8> {
+fn compress_canonical(buffer: &Vec<u8>, byte_codes: &[Option<Vec<u8>>; 256]) -> Vec<u8> {
     let mut compressed_bits = Vec::new();
 
-    for byte in buffer.iter() {
-        if let Some(code) = byte_canonical_codes.get(byte) {
-            for bit in code {
-                compressed_bits.push(*bit);
-            }
+    for &byte in buffer.iter() {
+        if let Some(code) = &byte_codes[byte as usize] {
+            compressed_bits.extend_from_slice(code);
         }
     }
 
@@ -330,40 +211,40 @@ fn compress_canonical(buffer: &Vec<u8>, byte_canonical_codes: &IndexMap<u8, Vec<
 }
 
 fn write_data_canonical(
-    byte_lengths: &Vec<(u8, usize)>,
-    compressed_bytes: &Vec<u8>,
-    output_path: &str
+    byte_lengths: &[(u8, usize)],
+    compressed_bits: &[u8],
+    output_path: &str,
 ) {
     let mut writer = BitWriter::new();
 
-    // Table length
-    let table_len: u32 = byte_lengths.len() as u32;
+    // Write table length (u32)
+    let table_len = byte_lengths.len() as u32;
     for i in (0..32).rev() {
         writer.write_bit(((table_len >> i) & 1) as u8);
     }
 
-    // Data bit length
-    let data_bit_length: u32 = compressed_bytes.len() as u32;
+    // Write compressed data length (u32)
+    let data_len = compressed_bits.len() as u32;
     for i in (0..32).rev() {
-        writer.write_bit(((data_bit_length >> i) & 1) as u8);
+        writer.write_bit(((data_len >> i) & 1) as u8);
     }
 
-    // Table: (byte, length)
-    for (byte, length) in byte_lengths.iter() {
+    // Write byte-length table
+    for &(byte, length) in byte_lengths {
         // Byte
         for i in (0..8).rev() {
-            writer.write_bit((*byte >> i) & 1);
+            writer.write_bit((byte >> i) & 1);
         }
-        // Code length (u8)
-        let len_u8 = *length as u8;
+        // Length as u8
+        let len_u8 = length as u8;
         for i in (0..8).rev() {
             writer.write_bit((len_u8 >> i) & 1);
         }
     }
 
     // Write compressed bits
-    for bit in compressed_bytes.iter() {
-        writer.write_bit(*bit);
+    for &bit in compressed_bits {
+        writer.write_bit(bit);
     }
 
     writer.flush_to_file(output_path);
@@ -389,8 +270,8 @@ fn read_data_canonical(output_path: &str) -> io::Result<Vec<u8>> {
     let data_len = u32::from_be_bytes(bits_to_bytes(&bits).try_into().unwrap());
     bits.clear();
 
-    // Read (byte, length)
-    let mut byte_lengths: Vec<(u8, usize)> = Vec::new();
+    // Read byte-length table
+    let mut byte_lengths = Vec::with_capacity(table_len as usize);
     for _ in 0..table_len {
         // Byte
         for _ in 0..8 {
@@ -403,147 +284,24 @@ fn read_data_canonical(output_path: &str) -> io::Result<Vec<u8>> {
         for _ in 0..8 {
             bits.push(reader.read_bit().unwrap());
         }
-        let length = u8::from_be_bytes(bits_to_bytes(&bits).try_into().unwrap());
+        let length = u8::from_be_bytes(bits_to_bytes(&bits).try_into().unwrap()) as usize;
         bits.clear();
 
-        byte_lengths.push((byte, length as usize));
+        byte_lengths.push((byte, length));
     }
 
     // Rebuild canonical codes
-    let codes = generate_canonical_codes(&byte_lengths);
+    let codes: [Option<Vec<u8>>; 256] = generate_canonical_codes(&byte_lengths);
 
-    // Invert mapping: bits → byte
-    let mut inv: IndexMap<Vec<u8>, u8> = IndexMap::new();
-    for (b, c) in codes.iter() {
-        inv.insert(c.clone(), *b);
-    }
-
-    // Read compressed data
-    let mut compressed_bits = Vec::new();
+    // Read compressed bits
+    let mut compressed_bits = Vec::with_capacity(data_len as usize);
     for _ in 0..data_len {
         compressed_bits.push(reader.read_bit().unwrap());
     }
 
-    // Decode
-    let mut back_buffer = Vec::new();
-    let mut tmp = Vec::new();
-    for bit in compressed_bits {
-        tmp.push(bit);
-        if let Some(byte) = inv.get(&tmp) {
-            back_buffer.push(*byte);
-            tmp.clear();
-        }
-    }
-
-    Ok(back_buffer)
-}
-
-fn normal_huffman(core: &core_header::CoreH) {
-    let debug_whole_timer = Instant::now();
-    let mut debug_timer = Instant::now();
-
-    let mut buffer: Vec<u8> = Vec::new();
-    let mut file_to_compress;
-
-    match File::open(core.args[1].clone()) {
-        Ok(file) => file_to_compress = file,
-        Err(msg) => {
-            println!("Error: {:?}", msg);
-            return;
-        },
-    }
-    
-    if let Err(msg) = file_to_compress.read_to_end(&mut buffer) {
-        println!("Error: {:?}", msg);
-        return;
-    }
-    println!("Read file: {:.2?}", debug_timer.elapsed());
-    debug_timer = Instant::now();
-
-    let chars_frequency_map = calculate_byte_frequencies(&buffer);
-    println!("Calculated frequency: {:.2?}", debug_timer.elapsed());
-
-    debug_timer = Instant::now();
-    let root_node = generate_huffman_tree(&chars_frequency_map);
-    println!("Calculated huffman tree: {:.2?}", debug_timer.elapsed());
-    
-    debug_timer = Instant::now();
-
-    // let mut debug_file;
-    // let mut debug_file_path = core.args[2].clone();
-    // debug_file_path.push("/debug.txt");
-
-    // match File::create(debug_file_path) {
-    //     Ok(data) => debug_file = data,
-    //     Err(msg) => {
-    //         println!("Error: {:?}", msg);
-    //         return;
-    //     },
-    // }
-    
-    // if let Err(msg) = debug_file.write(format!("{:#?}", huffman_tree).as_bytes()) {
-    //     println!("Error: {:?}", msg);
-    // }
-
-    let byte_codes = generate_byte_codes(&root_node);
-    println!("Calculated byte codes: {:.2?}", debug_timer.elapsed());
-    debug_timer = Instant::now();
-    let compressed_bits = compress(&buffer, &byte_codes);
-    println!("Calculated compressed bytes: {:.2?}", debug_timer.elapsed());
-    debug_timer = Instant::now();
-
-    let mut comp_path = core.args[2].clone();
-    comp_path.push("/compressed_normal.purgepack");
-
-    write_data(&byte_codes, &compressed_bits, comp_path.to_str().unwrap());
-    println!("Wrote data: {:.2?}", debug_timer.elapsed());
-    debug_timer = Instant::now();
-
-    let back_buffer;
-    match read_data(comp_path.to_str().unwrap()) {
-        Ok(data) => back_buffer = data,
-        Err(msg) => {
-            println!("Error: {:?}", msg);
-            return;
-        },
-    }
-    println!("Read data: {:.2?}", debug_timer.elapsed());
-    debug_timer = Instant::now();
-
-    println!("{:?}", buffer == back_buffer);
-
-    let res_path = core.args[3].clone();
-    let mut result;
-    match File::create(res_path) {
-        Ok(data) => result = data,
-        Err(msg) => {
-            println!("Error: {:?}", msg);
-            return;
-        },
-    }
-
-    if let Err(msg) = result.write(&back_buffer) {
-        println!("Error: {:?}", msg);
-        return;
-    }
-    println!("Written read data: {:.2?}", debug_timer.elapsed());
-
-    let compressed_file;
-    match File::open(comp_path) {
-        Ok(file) => compressed_file = file,
-        Err(msg) => {
-            println!("Error: {:?}", msg);
-            return;
-        },
-    }
-
-    println!("Elapsed: {:.2?}", debug_whole_timer.elapsed());
-    println!("Original size: {} bytes", buffer.len());
-    println!("Compressed size: {} bits", compressed_bits.len());
-    println!(
-        "Compressed size compared to original: {}%",
-        (compressed_file.metadata().unwrap().len() as f32 / buffer.len() as f32) * 100.0
-    );
+    // Build decoding tree
+    let decoding_root = build_decoding_tree(&codes);
+    Ok(decode_canonical(&compressed_bits, &decoding_root))
 }
 
 fn canonical_huffman(core: &core_header::CoreH) {
@@ -577,32 +335,18 @@ fn canonical_huffman(core: &core_header::CoreH) {
 
     debug_timer = Instant::now();
 
-    // let mut debug_file;
-    // let mut debug_file_path = core.args[2].clone();
-    // debug_file_path.push("/debug.txt");
-
-    // match File::create(debug_file_path) {
-    //     Ok(data) => debug_file = data,
-    //     Err(msg) => {
-    //         println!("Error: {:?}", msg);
-    //         return;
-    //     },
-    // }
-    
-    // if let Err(msg) = debug_file.write(format!("{:#?}", huffman_tree).as_bytes()) {
-    //     println!("Error: {:?}", msg);
-    // }
-
-    let mut byte_codes = generate_byte_codes(&root_node);
+    let byte_codes = generate_byte_codes(&root_node);
     println!("Calculated byte codes: {:.2?}", debug_timer.elapsed());
 
     debug_timer = Instant::now();
-    let code_lengths: Vec<(u8, usize)> = byte_codes.iter().map(|(b, c)| (*b, c.len())).collect();
-    byte_codes = generate_canonical_codes(&code_lengths);
+    let code_lengths: Vec<(u8, usize)> = byte_codes.iter().enumerate()
+        .filter_map(|(b, c)| if !c.is_empty() { Some((b as u8, c.len())) } else { None })
+        .collect();
+    let codes = generate_canonical_codes(&code_lengths);
     println!("Calculated canonical byte codes {:.2?}", debug_timer.elapsed());
 
     debug_timer = Instant::now();
-    let compressed_bits = compress_canonical(&buffer, &byte_codes);
+    let compressed_bits = compress_canonical(&buffer, &codes);
     println!("Calculated compressed bytes: {:.2?}", debug_timer.elapsed());
 
     debug_timer = Instant::now();
@@ -662,10 +406,6 @@ fn canonical_huffman(core: &core_header::CoreH) {
 
 #[unsafe(no_mangle)]
 extern "system" fn module_startup(core: &core_header::CoreH) {
-    if core.args.contains(&OsString::from("V1")) {
-        normal_huffman(core);
-        return;
-    }
     canonical_huffman(core);
 }
 

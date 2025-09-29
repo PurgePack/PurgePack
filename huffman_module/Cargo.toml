@@ -8,5 +8,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 bit_buffers = "0.1.2"
-indexmap = "2.11.4"
 shared_files ={ path = "../shared_files"}
