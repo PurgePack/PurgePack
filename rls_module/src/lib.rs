@@ -1,97 +1,138 @@
-use std::{ffi::OsString, io::Write, path::Path};
+use core_header::CoreH;
+use std::{ffi::OsString, io::Write, path::PathBuf};
 
 use shared_files::core_header;
 
 const MAX_RUN_LENGTH: u8 = u8::MAX;
 const ESCAPE_BYTE: u8 = u8::MIN;
 
+#[derive(Debug, Clone, Copy)]
+pub enum Operation {
+    Compress,
+    Decompress,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Mode {
+    Preview,
+    Deploy,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Version {
+    V1,
+    V2,
+    Auto,
+}
+
+#[derive(Debug)]
+pub struct CliArgs {
+    pub operation: Operation,
+    pub mode: Mode,
+    pub in_path: PathBuf,
+    pub out_path: PathBuf,
+    pub version: Version,
+}
+
+#[derive(Debug)]
+pub enum CliError {
+    InvalidLength,
+    InvalidOperation(String),
+    InvalidMode(String),
+    InputFileNotFound(PathBuf),
+    InputNotFile(PathBuf),
+    OutputParentDirNotFound(PathBuf),
+    OutputParentNotDir(PathBuf),
+    InvalidVersion(String),
+}
+
 #[unsafe(no_mangle)]
 extern "system" fn module_startup(core: &core_header::CoreH) {
-    if core.args[1] == OsString::from("c") {
-        compress_from_file(
-            core.args[2].clone(),
-            core.args[3].clone(),
-            core.args[4].clone(),
-            core.args[5].clone(),
-        );
-    } else if core.args[1] == OsString::from("d") {
-        decompress_from_file(
-            core.args[2].clone(),
-            core.args[3].clone(),
-            core.args[4].clone(),
-            core.args[5].clone(),
-        );
-    } else {
-        print!("command line argument format should be <c|d> <in_file> <out_file> <version>");
-        return;
-    }
+    match parse_args(core) {
+        Ok(args) => {
+            println!("Valid argument configuration loaded: {:?}", args);
 
-    if core.args.len() > 5 {
-        println!("invalid command line argument legth");
-        println!("command line argument format should be <c|d> <in_file> <out_file> <version>");
-        return;
-    }
-    match core.args[1].to_string_lossy().as_ref() {
-        "c" | "d" => {
-            println!("Using option: {}", core.args[1].to_string_lossy());
-        }
-        _ => {
-            println!("invalid command line argument: option must be 'c' or 'd'");
-            println!("option descriptions:");
-            println!("c stands for compression");
-            println!("d stands for decompression");
-            println!("command line argument format should be <c|d> <in_file> <out_file> <version>");
-            return;
-        }
-    }
-    let in_file_arg = core.args[2].to_string_lossy();
+            let in_file_arg_os = core.args[3].clone();
+            let out_file_arg_os = core.args[4].clone();
+            let version_arg_os = core.args[5].clone();
+            let mode_arg_os = core.args[2].clone();
 
-    let in_path = Path::new(in_file_arg.as_ref());
-    if !in_path.exists() {
-        println!("Error: Input file does not exist: {}", in_file_arg);
-        return;
-    }
-
-    if !in_path.is_file() {
-        println!("Error: Input path is not a file: {}", in_file_arg);
-        return;
-    }
-
-    let out_file_arg = core.args[3].to_string_lossy();
-    let out_path = Path::new(out_file_arg.as_ref());
-    if let Some(parent) = out_path.parent() {
-        if !parent.exists() {
-            println!(
-                "Error: The output directory does not exist: {}",
-                parent.display()
-            );
-            println!(
-                "Please ensure the directory is created: {}",
-                parent.display()
-            );
-            return;
+            match args.operation {
+                Operation::Compress => {
+                    compress_from_file(
+                        mode_arg_os,
+                        in_file_arg_os,
+                        out_file_arg_os,
+                        version_arg_os,
+                    );
+                }
+                Operation::Decompress => {
+                    decompress_from_file(
+                        mode_arg_os,
+                        in_file_arg_os,
+                        out_file_arg_os,
+                        version_arg_os,
+                    );
+                }
+            }
         }
-
-        if !parent.is_dir() {
-            println!(
-                "Error: The parent path of the output file is not a directory: {}",
-                parent.display()
-            );
-            return;
-        }
-    }
-    match core.args[4].to_string_lossy().as_ref() {
-        "v1" | "v2" | "auto" => {
-            println!("Using version: {}", core.args[4].to_string_lossy());
-        }
-        _ => {
-            println!("invalid version argument: must be 'v1', 'v2', or 'auto'");
-            println!("version descriptions:");
-            println!("v1 stands for Run-Length Encoding version 1 for highly repetitive data");
-            println!("v2 stands for Run-Length Encoding version 2 for not as repetitive data");
-            println!("auto lets the program choose the best version based on input data");
-            println!("command line argument format should be <c|d> <in_file> <out_file> <version>");
-            return;
+        Err(e) => {
+            println!("Error during argument validation:");
+            match e {
+                CliError::InvalidLength => {
+                    println!("invalid command line argument length: expected 6 arguments.");
+                    print_argument_format();
+                }
+                CliError::InvalidOperation(arg) => {
+                    println!(
+                        "invalid command line argument: option must be 'c' or 'd' (found: {})",
+                        arg
+                    );
+                    println!(
+                        "option descriptions: c stands for compression, d stands for decompression"
+                    );
+                    print_argument_format();
+                }
+                CliError::InvalidMode(arg) => {
+                    println!(
+                        "invalid mode argument: must be 'preview' or 'deploy' (found: {})",
+                        arg
+                    );
+                    println!(
+                        "mode descriptions: preview mode allows checking output without final deployment, deploy mode executes the compression/decompression to the output file"
+                    );
+                    print_argument_format();
+                }
+                CliError::InputFileNotFound(path) => {
+                    println!("Error: Input file does not exist: {}", path.display());
+                }
+                CliError::InputNotFile(path) => {
+                    println!("Error: Input path is not a file: {}", path.display());
+                }
+                CliError::OutputParentDirNotFound(path) => {
+                    println!(
+                        "Error: The output directory does not exist: {}",
+                        path.display()
+                    );
+                    println!("Please ensure the directory is created: {}", path.display());
+                }
+                CliError::OutputParentNotDir(path) => {
+                    println!(
+                        "Error: The parent path of the output file is not a directory: {}",
+                        path.display()
+                    );
+                }
+                CliError::InvalidVersion(arg) => {
+                    println!(
+                        "invalid version argument: must be 'v1', 'v2', or 'auto' (found: {})",
+                        arg
+                    );
+                    println!(
+                        "version descriptions: v1/v2 stands for Run-Length Encoding version, auto lets the program choose the best version based on input data"
+                    );
+                    print_argument_format();
+                }
+            }
         }
     }
 }
@@ -479,4 +520,68 @@ fn auto_choice(uncompressed_data: &Vec<u8>) -> &'static str {
     } else {
         return "v1";
     }
+}
+
+const ARGUMENT_FORMAT: &str = "command line argument format should be <main program path> <c|d> <preview|deploy> <in_file> <out_file> <version>";
+
+fn print_argument_format() {
+    println!("{}", ARGUMENT_FORMAT);
+}
+
+fn parse_args(core: &CoreH) -> Result<CliArgs, CliError> {
+    if core.args.len() != 6 {
+        return Err(CliError::InvalidLength);
+    }
+
+    fn osstr_to_string(os_str: &OsString) -> String {
+        os_str.to_string_lossy().into_owned()
+    }
+
+    let operation_arg = &core.args[1];
+    let operation = match operation_arg.to_string_lossy().as_ref() {
+        "c" => Operation::Compress,
+        "d" => Operation::Decompress,
+        _ => return Err(CliError::InvalidOperation(osstr_to_string(operation_arg))),
+    };
+
+    let mode_arg = &core.args[2];
+    let mode = match mode_arg.to_string_lossy().as_ref() {
+        "preview" => Mode::Preview,
+        "deploy" => Mode::Deploy,
+        _ => return Err(CliError::InvalidMode(osstr_to_string(mode_arg))),
+    };
+
+    let in_path = PathBuf::from(&core.args[3]);
+    if !in_path.exists() {
+        return Err(CliError::InputFileNotFound(in_path));
+    }
+    if !in_path.is_file() {
+        return Err(CliError::InputNotFile(in_path));
+    }
+
+    let out_path = PathBuf::from(&core.args[4]);
+    if let Some(parent) = out_path.parent() {
+        if !parent.exists() {
+            return Err(CliError::OutputParentDirNotFound(parent.to_path_buf()));
+        }
+        if !parent.is_dir() {
+            return Err(CliError::OutputParentNotDir(parent.to_path_buf()));
+        }
+    }
+
+    let version_arg = &core.args[5];
+    let version = match version_arg.to_string_lossy().as_ref() {
+        "v1" => Version::V1,
+        "v2" => Version::V2,
+        "auto" => Version::Auto,
+        _ => return Err(CliError::InvalidVersion(osstr_to_string(version_arg))),
+    };
+
+    Ok(CliArgs {
+        operation,
+        mode,
+        in_path,
+        out_path,
+        version,
+    })
 }
