@@ -1,4 +1,4 @@
-use std::{ffi::OsString, io::Write};
+use std::{ffi::OsString, io::Write, path::Path};
 
 use shared_files::core_header;
 
@@ -22,8 +22,77 @@ extern "system" fn module_startup(core: &core_header::CoreH) {
             core.args[5].clone(),
         );
     } else {
-        print!("format should be <c|d> <in_file> <out_file> <version>");
+        print!("command line argument format should be <c|d> <in_file> <out_file> <version>");
         return;
+    }
+
+    if core.args.len() > 5 {
+        println!("invalid command line argument legth");
+        println!("command line argument format should be <c|d> <in_file> <out_file> <version>");
+        return;
+    }
+    match core.args[1].to_string_lossy().as_ref() {
+        "c" | "d" => {
+            println!("Using option: {}", core.args[1].to_string_lossy());
+        }
+        _ => {
+            println!("invalid command line argument: option must be 'c' or 'd'");
+            println!("option descriptions:");
+            println!("c stands for compression");
+            println!("d stands for decompression");
+            println!("command line argument format should be <c|d> <in_file> <out_file> <version>");
+            return;
+        }
+    }
+    let in_file_arg = core.args[2].to_string_lossy();
+
+    let in_path = Path::new(in_file_arg.as_ref());
+    if !in_path.exists() {
+        println!("Error: Input file does not exist: {}", in_file_arg);
+        return;
+    }
+
+    if !in_path.is_file() {
+        println!("Error: Input path is not a file: {}", in_file_arg);
+        return;
+    }
+
+    let out_file_arg = core.args[3].to_string_lossy();
+    let out_path = Path::new(out_file_arg.as_ref());
+    if let Some(parent) = out_path.parent() {
+        if !parent.exists() {
+            println!(
+                "Error: The output directory does not exist: {}",
+                parent.display()
+            );
+            println!(
+                "Please ensure the directory is created: {}",
+                parent.display()
+            );
+            return;
+        }
+
+        if !parent.is_dir() {
+            println!(
+                "Error: The parent path of the output file is not a directory: {}",
+                parent.display()
+            );
+            return;
+        }
+    }
+    match core.args[4].to_string_lossy().as_ref() {
+        "v1" | "v2" | "auto" => {
+            println!("Using version: {}", core.args[4].to_string_lossy());
+        }
+        _ => {
+            println!("invalid version argument: must be 'v1', 'v2', or 'auto'");
+            println!("version descriptions:");
+            println!("v1 stands for Run-Length Encoding version 1 for highly repetitive data");
+            println!("v2 stands for Run-Length Encoding version 2 for not as repetitive data");
+            println!("auto lets the program choose the best version based on input data");
+            println!("command line argument format should be <c|d> <in_file> <out_file> <version>");
+            return;
+        }
     }
 }
 
@@ -340,43 +409,65 @@ fn decompress_from_file(
         println!("Not a purgepack compressed file");
         return;
     }
-    let uncompressed_data = std::fs::read(file_path).unwrap();
-    let decompressed_data;
-    match version.to_string_lossy().as_ref() {
-        "v1" => decompressed_data = decompress_v1(&uncompressed_data),
-        "v2" => decompressed_data = decompress_v2(&uncompressed_data),
-        _ => decompressed_data = decompress_v1(&uncompressed_data),
-    }
 
-    match decompressed_data {
-        Ok(data) => {
-            decompressed_data = data;
-        }
+    let compressed_data = match std::fs::read(&file_path) {
+        Ok(data) => data,
         Err(e) => {
-            println!("{}", e);
+            eprintln!("Error reading file {:?}: {}", file_path, e);
             return;
         }
-    }
-    if deploy == OsString::from("preview") {
+    };
+
+    let result_data = match version.to_string_lossy().as_ref() {
+        "v1" => decompress_v1(&compressed_data),
+        "v2" => decompress_v2(&compressed_data),
+        _ => decompress_v1(&compressed_data),
+    };
+
+    let decompressed_data = match result_data {
+        Ok(data) => data,
+        Err(e) => {
+            eprintln!("Decompression error: {}", e);
+            return;
+        }
+    };
+
+    if deploy.to_string_lossy().as_ref() == "preview" {
         println!("\n--- Compression Statistics ---");
-        println!("  Original Size:    {} bytes", uncompressed_data.len());
-        println!("  decompressed Size:  {} bytes", decompressed_data.len());
         println!(
-            "  Compression Ratio: {:.2}",
-            decompressed_data.len() as f32 / uncompressed_data.len() as f32
+            "  Compressed (Input) Size:  {} bytes",
+            compressed_data.len()
+        );
+        println!(
+            "  Decompressed (Output) Size: {} bytes",
+            decompressed_data.len()
+        );
+        println!(
+            "  Ratio (Decompressed/Compressed): {:.2}",
+            decompressed_data.len() as f32 / compressed_data.len() as f32
         );
     }
-    let mut decompressed_data_file = std::fs::File::create(output_file_path.clone()).unwrap();
+
+    let mut decompressed_data_file = match std::fs::File::create(&output_file_path) {
+        Ok(file) => file,
+        Err(e) => {
+            eprintln!("Error creating output file {:?}: {}", output_file_path, e);
+            return;
+        }
+    };
+
     if output_file_path
         .to_string_lossy()
         .as_ref()
         .ends_with(".txt")
     {
-        String::from_utf8(decompressed_data.clone()).unwrap();
+        let _ = String::from_utf8(decompressed_data.clone()).unwrap();
     }
-    decompressed_data_file
-        .write_all(&decompressed_data)
-        .unwrap();
+
+    match decompressed_data_file.write_all(&decompressed_data) {
+        Ok(_) => println!("Successfully written to {:?}", output_file_path),
+        Err(e) => eprintln!("Error writing to file: {}", e),
+    }
 }
 
 fn auto_choice(uncompressed_data: &Vec<u8>) -> &'static str {
