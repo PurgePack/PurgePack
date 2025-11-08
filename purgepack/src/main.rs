@@ -58,7 +58,7 @@ fn print_core(s: &str) {
 fn load_modules_windows(
     core: &core_header::CoreH,
     skip_modules: Option<Rc<Vec<OsString>>>,
-) -> Result<Rc<RefCell<HashMap<PathBuf, HMODULE>>>, ModuleError> {
+) -> Result<HashMap<PathBuf, HMODULE>, ModuleError> {
     use std::{collections::HashMap, fs, path::PathBuf};
 
     let mut dll_name: Vec<Vec<u16>> = Vec::new();
@@ -150,7 +150,7 @@ fn load_modules_windows(
     }
 
     let mut failed_modules: usize = 0;
-    let dll_table: Rc<RefCell<HashMap<PathBuf, HMODULE>>> = Rc::new(RefCell::new(HashMap::new()));
+    let mut dll_table: HashMap<PathBuf, HMODULE> = HashMap::new();
 
     for module in dll_name.iter().enumerate() {
         unsafe {
@@ -188,9 +188,7 @@ fn load_modules_windows(
 
             startup_fn(&core);
 
-            dll_table
-                .borrow_mut()
-                .insert(readable_dll_path[module.0].clone(), handle);
+            dll_table.insert(readable_dll_path[module.0].clone(), handle);
         }
     }
 
@@ -332,12 +330,12 @@ fn load_modules_linux(
 #[cfg(all(target_os = "windows", feature = "win"))]
 fn unload_modules_windows(
     core: &mut core_header::CoreH,
-    dll_table: Rc<RefCell<HashMap<PathBuf, HMODULE>>>,
+    dll_table: HashMap<PathBuf, HMODULE>,
     exiting: bool,
 ) -> Result<(), ModuleError> {
     let mut failed_modules: usize = 0;
 
-    for (_module_path, handle) in dll_table.borrow().iter() {
+    for (_module_path, handle) in dll_table.iter() {
         unsafe {
             let func_name_c =
                 std::ffi::CString::new("module_shutdown").expect("CString::new failed");
@@ -363,7 +361,7 @@ fn unload_modules_windows(
         }
     }
 
-    for (module_path, handle) in dll_table.borrow().iter() {
+    for (module_path, handle) in dll_table.iter() {
         unsafe {
             if let Err(msg) = FreeLibrary(*handle) {
                 failed_modules += 1;
@@ -373,7 +371,7 @@ fn unload_modules_windows(
         }
     }
 
-    if failed_modules == dll_table.borrow().len() {
+    if failed_modules == dll_table.len() {
         return Err(ModuleError::AllModuleUnloadError(format!(
             "All modules failed to unload!"
         )));
