@@ -698,6 +698,6 @@ extern "system" fn module_startup(core: &core_header::CoreH) {
 
 /// Called when the module is shutting down.
 #[unsafe(no_mangle)]
-extern "system" fn module_shutdown(_core: &mut core_header::CoreH, _exiting: bool) {
+extern "system" fn module_shutdown(_core: &core_header::CoreH) {
     // no operation
 }

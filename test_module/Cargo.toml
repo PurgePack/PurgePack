@@ -3,14 +3,8 @@ name = "test_module"
 version = "0.1.0"
 edition = "2024"
 
-[features]
-win = ["dep:windows"]
-
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
 shared_files = { path = "../shared_files" }
-windows = { version = "0.62.0", features = [
-    "Win32_UI_WindowsAndMessaging"
-], optional = true}
