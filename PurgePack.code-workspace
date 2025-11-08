@@ -6,7 +6,7 @@
 	],
 	"settings": {
 		"rust-analyzer.linkedProjects": [
-			"./",
+			"./Cargo.toml",
 			"./purgepack/Cargo.toml",
 			"./test_module/Cargo.toml",
 			"./shared_files/Cargo.toml",

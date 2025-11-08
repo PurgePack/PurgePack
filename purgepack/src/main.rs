@@ -1,14 +1,12 @@
-#[cfg(all(target_os = "windows", feature = "win"))]
 use core::fmt;
-#[cfg(all(target_os = "windows", feature = "win"))]
 use std::env;
-#[cfg(all(target_os = "windows", feature = "win"))]
 use std::ffi::OsString;
-#[cfg(all(target_os = "windows", feature = "win"))]
 use std::{cell::RefCell, error::Error, rc::Rc};
-#[cfg(all(target_os = "windows", feature = "win"))]
 use std::{collections::HashMap, path::PathBuf};
-#[cfg(all(target_os = "windows", feature = "win"))]
+#[cfg(target_os = "linux")]
+use libloading::Library;
+#[cfg(target_os = "linux")]
+use libloading::Symbol;
 use shared_files::core_header;
 #[cfg(all(target_os = "windows", feature = "win"))]
 use windows::{
@@ -20,7 +18,6 @@ use windows::{
     core::{PCSTR, PCWSTR},
 };
 
-#[cfg(all(target_os = "windows", feature = "win"))]
 #[derive(Debug, PartialEq, Eq)]
 enum ModuleError {
     FileSystemError(String),
@@ -29,7 +26,6 @@ enum ModuleError {
     CanceledExit(String),
 }
 
-#[cfg(all(target_os = "windows", feature = "win"))]
 impl fmt::Display for ModuleError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
@@ -51,10 +47,8 @@ impl fmt::Display for ModuleError {
     }
 }
 
-#[cfg(all(target_os = "windows", feature = "win"))]
 impl Error for ModuleError {}
 
-#[cfg(all(target_os = "windows", feature = "win"))]
 fn print_core(s: &str) {
     println!("{}", s);
     println!("Someone called this :O");
@@ -207,6 +201,134 @@ fn load_modules_windows(
     return Ok(dll_table.clone());
 }
 
+#[cfg(target_os = "linux")]
+fn load_modules_linux(
+    core: &core_header::CoreH,
+    skip_modules: Option<Rc<Vec<OsString>>>,
+) -> Result<HashMap<PathBuf, Library>, ModuleError> {
+    use std::{collections::HashMap, fs, path::PathBuf};
+
+    let mut library_names: Vec<PathBuf> = Vec::new();
+    let mut readable_library_path = Vec::new();
+
+    let paths;
+
+    match fs::read_dir("modules") {
+        Ok(data) => paths = data,
+        Err(msg) => {
+            if let Err(msg2) = fs::create_dir("modules") {
+                return Err(ModuleError::FileSystemError(format!(
+                    "Failed to create module folder: {:?}",
+                    msg2
+                )));
+            }
+
+            return Err(ModuleError::AllModuleLoadError(format!(
+                "Module folder (\"module\') was missing and has been created: {:?}",
+                msg
+            )));
+        }
+    }
+
+    let mut number_of_modules: usize = 0;
+
+    for path in paths {
+        let real_path;
+
+        match path {
+            Ok(data) => real_path = data,
+            Err(_) => continue,
+        }
+
+        let file_type;
+
+        match real_path.file_type() {
+            Ok(data) => file_type = data,
+            Err(_) => continue,
+        }
+
+        if !file_type.is_file() {
+            continue;
+        }
+
+        match real_path.path().extension() {
+            Some(data) => {
+                if data.to_ascii_lowercase() != "so" {
+                    continue;
+                }
+            }
+            None => continue,
+        }
+
+        let path = real_path.path();
+        let file_name;
+
+        match path.file_stem() {
+            Some(data) => file_name = data,
+            None => continue,
+        }
+
+        if skip_modules.is_some()
+            && skip_modules
+                .as_ref()
+                .unwrap()
+                .contains(&OsString::from(file_name))
+        {
+            println!("Skipped {:?}", real_path.path().file_stem());
+            continue;
+        }
+
+        number_of_modules += 1;
+
+        library_names.push(real_path.path());
+        readable_library_path.push(real_path.path());
+    }
+
+    if number_of_modules <= 0 {
+        return Err(ModuleError::FileSystemError(format!("Found no modules!")));
+    }
+
+    let mut failed_modules: usize = 0;
+    let mut library_table: HashMap<PathBuf, Library> = HashMap::new();
+
+    for module in library_names.iter().enumerate() {
+        unsafe {
+            println!("{:?}", module.1);
+            let library;
+
+            match Library::new(module.1) {
+                Ok(data) => library = data,
+                Err(msg) => {
+                    failed_modules += 1;
+                    println!("Failed to load library!: {}", msg);
+                    continue;
+                }
+            }
+
+            let startup_fn: Symbol<extern "system" fn(core: &core_header::CoreH)>;
+
+            match library.get(b"module_startup\0") {
+                Ok(func) => startup_fn = func,
+                Err(msg) => {
+                    failed_modules += 1;
+                    println!("Did not find startup function: {}", msg);
+                    continue;
+                }
+            }
+
+            startup_fn(&core);
+
+            library_table.insert(readable_library_path[module.0].clone(), library);
+        }
+    }
+
+    if failed_modules > 0 {
+        println!("Failed to load {} module(s)!", failed_modules);
+    }
+
+    return Ok(library_table);
+}
+
 #[cfg(all(target_os = "windows", feature = "win"))]
 fn unload_modules_windows(
     core: &mut core_header::CoreH,
@@ -261,7 +383,61 @@ fn unload_modules_windows(
     Ok(())
 }
 
-#[cfg(all(target_os = "windows", feature = "win"))]
+#[cfg(target_os = "linux")]
+fn unload_modules_linux(
+    core: &mut core_header::CoreH,
+    mut library_table: HashMap<PathBuf, Library>,
+    exiting: bool,
+) -> Result<(), ModuleError> {
+    let mut failed_modules: usize = 0;
+
+    for (_module_path, handle) in library_table.iter() {
+        unsafe {
+            let shutdown_fn: Symbol<extern "system" fn(core: &mut core_header::CoreH, exiting: bool)>;
+
+            match handle.get(b"module_shutdown\0") {
+                Ok(func) => shutdown_fn = func,
+                Err(msg) => {
+                    failed_modules += 1;
+                    println!("Did not find shutdown function: {}", msg);
+                    continue;
+                }
+            }
+
+            shutdown_fn(core, exiting);
+
+            if core.cancel_exit && exiting {
+                return Err(ModuleError::CanceledExit(format!("Canceled exit!")));
+            }
+            else if core.cancel_exit {
+                core.cancel_exit = false;
+            }
+        }
+    }
+
+    let len = library_table.len();
+
+    for _i in 0..len {
+        let key = library_table.keys().next().unwrap().clone();
+        let handle = library_table.remove(&key).unwrap();
+
+        if let Err(msg) = handle.close() {
+            failed_modules += 1;
+            println!("Failed to unload library {:?}: {:?}", key, msg);
+            continue;
+        }
+    }
+
+    if failed_modules == len {
+        return Err(ModuleError::AllModuleUnloadError(format!(
+            "All modules failed to unload!"
+        )));
+    } else if failed_modules > 0 {
+        println!("Failed to unload {:?} module(s)!", failed_modules)
+    }
+    Ok(())
+}
+
 fn main() {
     let args = Rc::new(env::args_os().collect::<Vec<_>>());
     println!("{:?}", args);
@@ -276,7 +452,17 @@ fn main() {
     };
 
     let modules;
+    #[cfg(all(target_os = "windows", feature = "win"))]
     match load_modules_windows(&mut core_header, Some(args)) {
+        Ok(data) => modules = data,
+        Err(msg) => {
+            println!("{:?}", msg);
+            return;
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    match load_modules_linux(&mut core_header, Some(args)) {
         Ok(data) => modules = data,
         Err(msg) => {
             println!("{:?}", msg);
@@ -286,7 +472,20 @@ fn main() {
 
     println!("{}", core_header.message_received.borrow());
 
+    #[cfg(all(target_os = "windows", feature = "win"))]
     if let Err(msg) = unload_modules_windows(&mut core_header, modules.clone(), true) {
+        println!("{:?}", msg);
+        if std::mem::discriminant(&msg)
+            != std::mem::discriminant(&ModuleError::CanceledExit(format!("")))
+        {
+            return;
+        }
+    } else {
+        return;
+    }
+
+    #[cfg(target_os = "linux")]
+    if let Err(msg) = unload_modules_linux(&mut core_header, modules, true) {
         println!("{:?}", msg);
         if std::mem::discriminant(&msg)
             != std::mem::discriminant(&ModuleError::CanceledExit(format!("")))
@@ -304,7 +503,7 @@ fn main() {
     }
 }
 
-#[cfg(not(all(target_os = "windows", feature="win")))]
-fn main() {
-    println!("Currently the modules are only implemented for .dll files. Will change soon!");
-}
+// #[cfg(not(all(target_os = "windows", feature="win")))]
+// fn main() {
+//     println!("Currently the modules are only implemented for .dll files. Will change soon!");
+// }
