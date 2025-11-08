@@ -8,7 +8,6 @@ use std::ffi::OsString;
 use std::{cell::RefCell, error::Error, rc::Rc};
 #[cfg(all(target_os = "windows", feature = "win"))]
 use std::{collections::HashMap, path::PathBuf};
-
 #[cfg(all(target_os = "windows", feature = "win"))]
 use shared_files::core_header;
 #[cfg(all(target_os = "windows", feature = "win"))]

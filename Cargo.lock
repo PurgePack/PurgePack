@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "huffman_module"
+version = "0.1.0"
+dependencies = [
+ "shared_files",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.101"
 source = "registry+https://github.com/rust-lang/crates.io-index"
