@@ -1,9 +1,17 @@
+use rand::Rng;
 use shared_files::core_header;
-use std::{ffi::OsString, io::Write};
+use std::{
+    ffi::OsString,
+    fs::File,
+    io::{self, Read, Seek, Write},
+    path::PathBuf,
+};
 mod cli_parse;
 
 const MAX_RUN_LENGTH: u8 = u8::MAX;
 const ESCAPE_BYTE: u8 = u8::MIN;
+const CHUNK_SIZE_BYTES: usize = 1024;
+const NUM_CHUNKS: usize = 5;
 
 #[unsafe(no_mangle)]
 extern "system" fn module_startup(_core: &core_header::CoreH) {
@@ -24,7 +32,7 @@ extern "system" fn module_startup(_core: &core_header::CoreH) {
                     );
 
                     compress_from_file(
-                        input_file.into_os_string(),
+                        input_file,
                         output_file.into_os_string(),
                         args.rle_version.to_string().into(),
                         args.stats,
@@ -356,7 +364,7 @@ fn push_to_compressed_data(compressed_data: &mut Vec<u8>, count: u8, current_byt
 }
 
 fn compress_from_file(
-    input_file_path: OsString,
+    input_file_path: PathBuf,
     output_file_path: OsString,
     version: OsString,
     is_stats_enabled: bool,
@@ -383,11 +391,12 @@ fn compress_from_file(
         "v1" => compressed_data = compress_v1(&uncompressed_data),
         "v2" => compressed_data = compress_v2(&uncompressed_data),
         "auto" => {
-            let choice = auto_choice(&uncompressed_data);
+            let random_chunks = read_multiple_random_chunks(&input_file_path).unwrap();
+            let choice = auto_choice_from_chunks(&random_chunks);
             version_used = choice.to_string();
             match choice {
-                "v1" => compressed_data = compress_v1(&uncompressed_data),
-                "v2" => compressed_data = compress_v2(&uncompressed_data),
+                cli_parse::Version::One => compressed_data = compress_v1(&uncompressed_data),
+                cli_parse::Version::Two => compressed_data = compress_v2(&uncompressed_data),
                 _ => {
                     eprintln!("Warning: Auto-choice failed, defaulting to V1.");
                     version_used = "v1".to_string();
@@ -529,13 +538,67 @@ fn decompress_from_file(
     }
 }
 
-fn auto_choice(uncompressed_data: &Vec<u8>) -> &'static str {
-    let compressed_data_v1 = compress_v1(uncompressed_data);
-    let compressed_data_v2 = compress_v2(uncompressed_data);
+fn auto_choice_from_chunks(chunks: &Vec<Vec<u8>>) -> cli_parse::Version {
+    let mut version1_score = 0;
+    let mut version2_score = 0;
 
-    if compressed_data_v1.len() >= compressed_data_v2.len() {
-        return "v2";
-    } else {
-        return "v1";
+    for chunk in chunks {
+        if chunk.is_empty() {
+            continue;
+        }
+
+        let compressed_data_v1 = compress_v1(chunk);
+        let compressed_data_v2 = compress_v2(chunk);
+
+        if compressed_data_v2.len() < compressed_data_v1.len() {
+            version2_score += 1;
+        } else if compressed_data_v1.len() < compressed_data_v2.len() {
+            version1_score += 1;
+        }
     }
+
+    if version2_score > version1_score {
+        cli_parse::Version::Two
+    } else {
+        cli_parse::Version::One
+    }
+}
+
+fn read_multiple_random_chunks(file_path: &PathBuf) -> io::Result<Vec<Vec<u8>>> {
+    let mut file = File::open(file_path)?;
+    let file_size = file.metadata()?.len();
+
+    if file_size == 0 {
+        return Ok(Vec::new());
+    }
+
+    let chunk_size = CHUNK_SIZE_BYTES as u64;
+    let mut chunks: Vec<Vec<u8>> = Vec::with_capacity(NUM_CHUNKS);
+    let mut rng = rand::rng();
+
+    let max_start_offset = if file_size < chunk_size {
+        0
+    } else {
+        file_size - chunk_size
+    };
+
+    if file_size <= chunk_size {
+        let mut buffer = Vec::with_capacity(file_size as usize);
+        file.read_to_end(&mut buffer)?;
+        chunks.push(buffer);
+        return Ok(chunks);
+    }
+
+    for _ in 0..NUM_CHUNKS {
+        let random_offset = rng.random_range(0..=max_start_offset);
+
+        file.seek(io::SeekFrom::Start(random_offset))?;
+
+        let mut buffer = vec![0; CHUNK_SIZE_BYTES];
+        file.read_exact(&mut buffer)?;
+
+        chunks.push(buffer);
+    }
+
+    Ok(chunks)
 }

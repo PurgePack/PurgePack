@@ -57,7 +57,25 @@ pub enum Commands {
     author,
     version,
     about = "RLE Compression Utility.",
-    long_about = "A utility for compression and decompression using specialized Run-Length Encoding (RLE) versions."
+    long_about = "A utility for compression and decompression using specialized Run-Length Encoding (RLE) versions.",
+    after_help = "
+    COMMON USAGE:
+      To use, start with the COMMAND (compress/decompress), followed by the INPUT and OUTPUT files.
+      Options like '-s' (stats) and '-r' (version) go before the command.
+
+    EXAMPLES:
+    # 1. Basic Compression (uses 'auto' version selection by default)
+    purgepack.exe compress my_data.txt my_data.ppcb
+
+    # 2. Decompressing and showing statistics
+    purgepack.exe decompress -s archive.ppcb restored.txt
+
+    # 3. Compressing using RLE v2 algorithm
+    purgepack.exe -r 2 compress huge_log.log huge_log.ppcb
+
+    # 4. Using the short alias for compression
+    purgepack.exe c source.bin dest.ppcb
+"
 )]
 pub struct CliArgs {
     /// The primary operation (compress or decompress) and its file paths.
