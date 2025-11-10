@@ -56,6 +56,8 @@ if [[ "$DO_CARGO" -eq 1 ]]; then
     for f in *.so; do
         if [[ -f "$f" ]]; then
             echo "Moving $f to modules folder"
+            target="modules/$(basename "$f")"
+            [[ -f "$target" ]] && rm -f "$target"
             mv "$f" modules/
         fi
     done
@@ -64,7 +66,6 @@ if [[ "$DO_CARGO" -eq 1 ]]; then
 fi
 
 if [[ "$DO_PURGEPACK" -eq 1 ]]; then
-    echo "Running ./purgepack ${PURGEPACK_ARGS[*]}"
     if ! ./purgepack "${PURGEPACK_ARGS[@]}"; then
         echo "purgepack failed, exiting"
         exit 1

@@ -278,7 +278,6 @@ fn load_modules_linux(
 
     for module in library_names.iter().enumerate() {
         unsafe {
-            println!("{:?}", module.1);
             let library;
 
             match Library::new(module.1) {
@@ -409,7 +408,7 @@ fn unload_modules_linux(
 
 fn main() {
     let args = Rc::new(env::args_os().collect::<Vec<_>>());
-    
+
     let core_header = core_header::CoreH {
         args: args.clone(),
     };
