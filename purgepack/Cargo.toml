@@ -3,9 +3,6 @@ name = "purgepack"
 version = "0.1.0"
 edition = "2024"
 
-[features]
-win = ["dep:windows"]
-
 [dependencies]
 libloading = "0.9.0"
 shared_files = { path = "../shared_files" }
@@ -15,4 +12,4 @@ windows = { version = "0.62.2", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_LibraryLoader",
     "Win32_Foundation"
-], optional = true}
+]}
