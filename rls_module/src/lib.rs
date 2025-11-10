@@ -1,157 +1,17 @@
-use clap::{Parser, Subcommand, ValueEnum};
-use std::{ffi::OsString, io::Write, path::PathBuf};
-
 use shared_files::core_header;
+use std::{ffi::OsString, io::Write};
+mod cli_parse;
 
 const MAX_RUN_LENGTH: u8 = u8::MAX;
 const ESCAPE_BYTE: u8 = u8::MIN;
 
-/// Defines which specialized Run-Length Encoding (RLE) algorithm version
-/// the program should use for compression or decompression.
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum Version {
-    /// RLE v1: Optimized for highly compressible data (many long runs).
-    #[value(name = "1")]
-    One,
-    /// RLE v2: Optimized for less compressible data (fewer, shorter runs).
-    #[value(name = "2")]
-    Two,
-    /// The program automatically selects the most appropriate algorithm.
-    #[value(name = "auto")]
-    Auto,
-}
-
-/// Implements the Display trait to allow the Version enum to be converted
-/// into a user-readable string (e.g., "1", "2", or "auto").
-/// This is required for clap to correctly display the default value in the help message.
-impl std::fmt::Display for Version {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Version::One => write!(f, "1"),
-            Version::Two => write!(f, "2"),
-            Version::Auto => write!(f, "auto"),
-        }
-    }
-}
-
-/// The main operations available for the utility.
-#[derive(Debug, Subcommand)]
-pub enum Commands {
-    /// Compresses the specified input file to the given output path.
-    #[clap(alias = "c")] // Allows 'c' as a short alias for 'compress'
-    Compress {
-        /// The file path to read data from for compression. This must exist.
-        input_file: PathBuf,
-        /// The file path to write the compressed data to.
-        output_file: PathBuf,
-    },
-
-    /// Decompresses the specified input file to the given output path.
-    #[clap(alias = "d")] // Allows 'd' as a short alias for 'decompress'
-    Decompress {
-        /// The file path to read data from for decompression.
-        input_file: PathBuf,
-        /// The file path to write the decompressed data to.
-        output_file: PathBuf,
-    },
-}
-
-/// The main command line argument structure for the RLE Compression Utility.
-/// This handles global options and delegates file arguments to the subcommands (compress/decompress).
-#[derive(Parser, Debug)]
-#[command(
-    author,
-    version,
-    about = "RLE Compression Utility.",
-    long_about = "A utility for compression and decompression using specialized Run-Length Encoding (RLE) versions."
-)]
-pub struct CliArgs {
-    /// The primary operation (compress or decompress) and its file paths.
-    #[command(subcommand)]
-    pub command: Commands,
-    /// Enables statistics output, such as compression ratio and execution time.
-    #[arg(short, long)]
-    pub stats: bool,
-    /// Specifies the RLE algorithm version to run. Possible values: "1", "2", or "auto".
-    #[arg(short = 'r', long = "rle-version", default_value_t = Version::Auto)]
-    pub rle_version: Version,
-}
-
-impl CliArgs {
-    /// Validates the command line arguments after parsing, specifically ensuring:
-    /// 1. The input file exists and is a file.
-    /// 2. The parent directory for the output file exists and is a directory.
-    pub fn validate(&self) -> Result<(), CliError> {
-        let (in_path, out_path) = match &self.command {
-            Commands::Compress {
-                input_file,
-                output_file,
-            } => (input_file, output_file),
-            Commands::Decompress {
-                input_file,
-                output_file,
-            } => (input_file, output_file),
-        };
-
-        // --- Input File Validation ---
-        if !in_path.exists() {
-            return Err(CliError::InputFileNotFound(in_path.clone()));
-        }
-        if !in_path.is_file() {
-            return Err(CliError::InputNotFile(in_path.clone()));
-        }
-
-        // --- Output Directory Validation ---
-        if let Some(parent) = out_path.parent() {
-            if !parent.exists() {
-                return Err(CliError::OutputParentDirNotFound(parent.to_path_buf()));
-            }
-            if !parent.is_dir() {
-                return Err(CliError::OutputParentNotDir(parent.to_path_buf()));
-            }
-        }
-
-        Ok(())
-    }
-}
-
-// Possible errors encountered during command line argument processing,
-/// file validation, or when executing the RLE operations.
-#[derive(Debug)]
-pub enum CliError {
-    /// The specified run-length or count was outside the valid bounds.
-    InvalidLength,
-    /// An unexpected or unsupported operation was attempted during processing.
-    InvalidOperation(String),
-    /// The specified input file could not be found.
-    InputFileNotFound(PathBuf),
-    /// The specified input path exists, but is not a file.
-    InputNotFile(PathBuf),
-    /// The parent directory for the output file does not exist.
-    OutputParentDirNotFound(PathBuf),
-    /// The parent path for the output file exists, but is not a directory.
-    OutputParentNotDir(PathBuf),
-    /// An invalid RLE version string was provided.
-    InvalidVersion(String),
-    /// An error originating directly from the argument parsing library (clap).
-    ClapError(clap::Error),
-}
-
-// Allows for seamless conversion of a `clap::Error` directly into a `CliError`.
-/// This is typically used when handling the result of `CliArgs::parse()`.
-impl From<clap::Error> for CliError {
-    fn from(error: clap::Error) -> Self {
-        CliError::ClapError(error)
-    }
-}
-
 #[unsafe(no_mangle)]
 extern "system" fn module_startup(_core: &core_header::CoreH) {
-    match parse_args() {
+    match cli_parse::parse_args() {
         Ok(args) => {
             println!("Valid argument configuration loaded: {:?}", args);
             match args.command {
-                Commands::Compress {
+                cli_parse::Commands::Compress {
                     input_file,
                     output_file,
                 } => {
@@ -170,7 +30,7 @@ extern "system" fn module_startup(_core: &core_header::CoreH) {
                         args.stats,
                     );
                 }
-                Commands::Decompress {
+                cli_parse::Commands::Decompress {
                     input_file,
                     output_file,
                 } => {
@@ -191,26 +51,26 @@ extern "system" fn module_startup(_core: &core_header::CoreH) {
                 }
             }
         }
-        Err(CliError::ClapError(e)) => {
+        Err(cli_parse::CliError::ClapError(e)) => {
             e.exit();
         }
         Err(e) => {
             println!("Error during argument validation:");
             match e {
-                CliError::InputFileNotFound(path) => {
+                cli_parse::CliError::InputFileNotFound(path) => {
                     println!("Error: Input file does not exist: {}", path.display());
                 }
-                CliError::InputNotFile(path) => {
+                cli_parse::CliError::InputNotFile(path) => {
                     println!("Error: Input path is not a file: {}", path.display());
                 }
-                CliError::OutputParentDirNotFound(path) => {
+                cli_parse::CliError::OutputParentDirNotFound(path) => {
                     println!(
                         "Error: The output directory does not exist: {}",
                         path.display()
                     );
                     println!("Please ensure the directory is created: {}", path.display());
                 }
-                CliError::OutputParentNotDir(path) => {
+                cli_parse::CliError::OutputParentNotDir(path) => {
                     println!(
                         "Error: The parent path of the output file is not a directory: {}",
                         path.display()
@@ -678,10 +538,4 @@ fn auto_choice(uncompressed_data: &Vec<u8>) -> &'static str {
     } else {
         return "v1";
     }
-}
-
-pub fn parse_args() -> Result<CliArgs, CliError> {
-    let args = CliArgs::try_parse()?;
-    args.validate()?;
-    Ok(args)
 }
