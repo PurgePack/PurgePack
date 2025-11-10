@@ -6,6 +6,6 @@ extern "system" fn module_startup(_core: &core_header::CoreH) {
 }
 
 #[unsafe(no_mangle)]
-extern "system" fn module_shutdown(_core: &mut core_header::CoreH) {
+extern "system" fn module_shutdown(_core: &core_header::CoreH) {
     println!("Goodbye world!");
 }
