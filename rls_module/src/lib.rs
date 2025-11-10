@@ -1,4 +1,4 @@
-use core_header::CoreH;
+use clap::{Parser, Subcommand, ValueEnum};
 use std::{ffi::OsString, io::Write, path::PathBuf};
 
 use shared_files::core_header;
@@ -6,103 +6,197 @@ use shared_files::core_header;
 const MAX_RUN_LENGTH: u8 = u8::MAX;
 const ESCAPE_BYTE: u8 = u8::MIN;
 
-#[derive(Debug, Clone, Copy)]
-pub enum Operation {
-    Compress,
-    Decompress,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum Mode {
-    Preview,
-    Deploy,
-}
-
-#[derive(Debug, Clone, Copy)]
+/// Defines which specialized Run-Length Encoding (RLE) algorithm version
+/// the program should use for compression or decompression.
+#[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum Version {
-    V1,
-    V2,
+    /// RLE v1: Optimized for highly compressible data (many long runs).
+    #[value(name = "1")]
+    One,
+    /// RLE v2: Optimized for less compressible data (fewer, shorter runs).
+    #[value(name = "2")]
+    Two,
+    /// The program automatically selects the most appropriate algorithm.
+    #[value(name = "auto")]
     Auto,
 }
 
-#[derive(Debug)]
-pub struct CliArgs {
-    pub operation: Operation,
-    pub mode: Mode,
-    pub in_path: PathBuf,
-    pub out_path: PathBuf,
-    pub version: Version,
+/// Implements the Display trait to allow the Version enum to be converted
+/// into a user-readable string (e.g., "1", "2", or "auto").
+/// This is required for clap to correctly display the default value in the help message.
+impl std::fmt::Display for Version {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Version::One => write!(f, "1"),
+            Version::Two => write!(f, "2"),
+            Version::Auto => write!(f, "auto"),
+        }
+    }
 }
 
+/// The main operations available for the utility.
+#[derive(Debug, Subcommand)]
+pub enum Commands {
+    /// Compresses the specified input file to the given output path.
+    #[clap(alias = "c")] // Allows 'c' as a short alias for 'compress'
+    Compress {
+        /// The file path to read data from for compression. This must exist.
+        input_file: PathBuf,
+        /// The file path to write the compressed data to.
+        output_file: PathBuf,
+    },
+
+    /// Decompresses the specified input file to the given output path.
+    #[clap(alias = "d")] // Allows 'd' as a short alias for 'decompress'
+    Decompress {
+        /// The file path to read data from for decompression.
+        input_file: PathBuf,
+        /// The file path to write the decompressed data to.
+        output_file: PathBuf,
+    },
+}
+
+/// The main command line argument structure for the RLE Compression Utility.
+/// This handles global options and delegates file arguments to the subcommands (compress/decompress).
+#[derive(Parser, Debug)]
+#[command(
+    author,
+    version,
+    about = "RLE Compression Utility.",
+    long_about = "A utility for compression and decompression using specialized Run-Length Encoding (RLE) versions."
+)]
+pub struct CliArgs {
+    /// The primary operation (compress or decompress) and its file paths.
+    #[command(subcommand)]
+    pub command: Commands,
+    /// Enables statistics output, such as compression ratio and execution time.
+    #[arg(short, long)]
+    pub stats: bool,
+    /// Specifies the RLE algorithm version to run. Possible values: "1", "2", or "auto".
+    #[arg(short = 'r', long = "rle-version", default_value_t = Version::Auto)]
+    pub rle_version: Version,
+}
+
+impl CliArgs {
+    /// Validates the command line arguments after parsing, specifically ensuring:
+    /// 1. The input file exists and is a file.
+    /// 2. The parent directory for the output file exists and is a directory.
+    pub fn validate(&self) -> Result<(), CliError> {
+        let (in_path, out_path) = match &self.command {
+            Commands::Compress {
+                input_file,
+                output_file,
+            } => (input_file, output_file),
+            Commands::Decompress {
+                input_file,
+                output_file,
+            } => (input_file, output_file),
+        };
+
+        // --- Input File Validation ---
+        if !in_path.exists() {
+            return Err(CliError::InputFileNotFound(in_path.clone()));
+        }
+        if !in_path.is_file() {
+            return Err(CliError::InputNotFile(in_path.clone()));
+        }
+
+        // --- Output Directory Validation ---
+        if let Some(parent) = out_path.parent() {
+            if !parent.exists() {
+                return Err(CliError::OutputParentDirNotFound(parent.to_path_buf()));
+            }
+            if !parent.is_dir() {
+                return Err(CliError::OutputParentNotDir(parent.to_path_buf()));
+            }
+        }
+
+        Ok(())
+    }
+}
+
+// Possible errors encountered during command line argument processing,
+/// file validation, or when executing the RLE operations.
 #[derive(Debug)]
 pub enum CliError {
+    /// The specified run-length or count was outside the valid bounds.
     InvalidLength,
+    /// An unexpected or unsupported operation was attempted during processing.
     InvalidOperation(String),
-    InvalidMode(String),
+    /// The specified input file could not be found.
     InputFileNotFound(PathBuf),
+    /// The specified input path exists, but is not a file.
     InputNotFile(PathBuf),
+    /// The parent directory for the output file does not exist.
     OutputParentDirNotFound(PathBuf),
+    /// The parent path for the output file exists, but is not a directory.
     OutputParentNotDir(PathBuf),
+    /// An invalid RLE version string was provided.
     InvalidVersion(String),
+    /// An error originating directly from the argument parsing library (clap).
+    ClapError(clap::Error),
+}
+
+// Allows for seamless conversion of a `clap::Error` directly into a `CliError`.
+/// This is typically used when handling the result of `CliArgs::parse()`.
+impl From<clap::Error> for CliError {
+    fn from(error: clap::Error) -> Self {
+        CliError::ClapError(error)
+    }
 }
 
 #[unsafe(no_mangle)]
-extern "system" fn module_startup(core: &core_header::CoreH) {
-    match parse_args(core) {
+extern "system" fn module_startup(_core: &core_header::CoreH) {
+    match parse_args() {
         Ok(args) => {
             println!("Valid argument configuration loaded: {:?}", args);
+            match args.command {
+                Commands::Compress {
+                    input_file,
+                    output_file,
+                } => {
+                    println!(
+                        "Compression: Input: {}, Output: {}, Version: {}, Statistics: {}",
+                        input_file.display(),
+                        output_file.display(),
+                        args.rle_version,
+                        args.stats,
+                    );
 
-            let in_file_arg_os = core.args[3].clone();
-            let out_file_arg_os = core.args[4].clone();
-            let version_arg_os = core.args[5].clone();
-            let mode_arg_os = core.args[2].clone();
-
-            match args.operation {
-                Operation::Compress => {
                     compress_from_file(
-                        mode_arg_os,
-                        in_file_arg_os,
-                        out_file_arg_os,
-                        version_arg_os,
+                        input_file.into_os_string(),
+                        output_file.into_os_string(),
+                        args.rle_version.to_string().into(),
+                        args.stats,
                     );
                 }
-                Operation::Decompress => {
+                Commands::Decompress {
+                    input_file,
+                    output_file,
+                } => {
+                    println!(
+                        "Decompression: Input: {}, Output: {}, Version: {}, Statistics: {}",
+                        input_file.display(),
+                        output_file.display(),
+                        args.rle_version,
+                        args.stats,
+                    );
+
                     decompress_from_file(
-                        mode_arg_os,
-                        in_file_arg_os,
-                        out_file_arg_os,
-                        version_arg_os,
+                        input_file.into_os_string(),
+                        output_file.into_os_string(),
+                        args.rle_version.to_string().into(),
+                        args.stats,
                     );
                 }
             }
         }
+        Err(CliError::ClapError(e)) => {
+            e.exit();
+        }
         Err(e) => {
             println!("Error during argument validation:");
             match e {
-                CliError::InvalidLength => {
-                    println!("invalid command line argument length: expected 6 arguments.");
-                    print_argument_format();
-                }
-                CliError::InvalidOperation(arg) => {
-                    println!(
-                        "invalid command line argument: option must be 'c' or 'd' (found: {})",
-                        arg
-                    );
-                    println!(
-                        "option descriptions: c stands for compression, d stands for decompression"
-                    );
-                    print_argument_format();
-                }
-                CliError::InvalidMode(arg) => {
-                    println!(
-                        "invalid mode argument: must be 'preview' or 'deploy' (found: {})",
-                        arg
-                    );
-                    println!(
-                        "mode descriptions: preview mode allows checking output without final deployment, deploy mode executes the compression/decompression to the output file"
-                    );
-                    print_argument_format();
-                }
                 CliError::InputFileNotFound(path) => {
                     println!("Error: Input file does not exist: {}", path.display());
                 }
@@ -122,15 +216,8 @@ extern "system" fn module_startup(core: &core_header::CoreH) {
                         path.display()
                     );
                 }
-                CliError::InvalidVersion(arg) => {
-                    println!(
-                        "invalid version argument: must be 'v1', 'v2', or 'auto' (found: {})",
-                        arg
-                    );
-                    println!(
-                        "version descriptions: v1/v2 stands for Run-Length Encoding version, auto lets the program choose the best version based on input data"
-                    );
-                    print_argument_format();
+                _ => {
+                    eprintln!("Unhandled argument error: {:?}", e);
                 }
             }
         }
@@ -409,57 +496,122 @@ fn push_to_compressed_data(compressed_data: &mut Vec<u8>, count: u8, current_byt
 }
 
 fn compress_from_file(
-    deploy: OsString,
     input_file_path: OsString,
     output_file_path: OsString,
     version: OsString,
+    is_stats_enabled: bool,
 ) {
-    let uncompressed_data = std::fs::read(input_file_path.clone()).unwrap();
-    let compressed_data;
-    match version.to_string_lossy().as_ref() {
-        "v1" => compressed_data = compress_v1(&uncompressed_data),
-        "v2" => compressed_data = compress_v2(&uncompressed_data),
-        "auto" => match auto_choice(&uncompressed_data) {
-            "v1" => compressed_data = compress_v1(&uncompressed_data),
-            "v2" => compressed_data = compress_v2(&uncompressed_data),
-            _ => compressed_data = compress_v1(&uncompressed_data),
-        },
-        _ => compressed_data = compress_v1(&uncompressed_data),
-    }
-    if deploy == OsString::from("preview") {
-        println!("\n--- Compression Statistics ---");
-        println!("  Original Size:    {} bytes", uncompressed_data.len());
-        println!("  Compressed Size:  {} bytes", compressed_data.len());
-        println!(
-            "  Compression Ratio: {:.2}",
-            compressed_data.len() as f32 / uncompressed_data.len() as f32
-        );
-    }
-
-    let mut compressed_data_file = std::fs::File::create(output_file_path).unwrap();
-    compressed_data_file.write_all(&compressed_data).unwrap();
-}
-
-fn decompress_from_file(
-    deploy: OsString,
-    file_path: OsString,
-    output_file_path: OsString,
-    version: OsString,
-) {
-    if !file_path.to_string_lossy().as_ref().ends_with(".purgepack") {
-        println!("Not a purgepack compressed file");
-        return;
-    }
-
-    let compressed_data = match std::fs::read(&file_path) {
+    let uncompressed_data = match std::fs::read(input_file_path.clone()) {
         Ok(data) => data,
         Err(e) => {
-            eprintln!("Error reading file {:?}: {}", file_path, e);
+            eprintln!(
+                "Error reading input file {}: {}",
+                input_file_path.to_string_lossy(),
+                e
+            );
             return;
         }
     };
 
-    let result_data = match version.to_string_lossy().as_ref() {
+    let compressed_data: Vec<u8>;
+    let mut version_used = version.to_string_lossy().to_string();
+
+    let uncompressed_len = uncompressed_data.len();
+
+    // Determine which version to use and execute compression
+    match version_used.as_ref() {
+        "v1" => compressed_data = compress_v1(&uncompressed_data),
+        "v2" => compressed_data = compress_v2(&uncompressed_data),
+        "auto" => {
+            let choice = auto_choice(&uncompressed_data);
+            version_used = choice.to_string();
+            match choice {
+                "v1" => compressed_data = compress_v1(&uncompressed_data),
+                "v2" => compressed_data = compress_v2(&uncompressed_data),
+                _ => {
+                    eprintln!("Warning: Auto-choice failed, defaulting to V1.");
+                    version_used = "v1".to_string();
+                    compressed_data = compress_v1(&uncompressed_data);
+                }
+            }
+        }
+        _ => {
+            eprintln!("Warning: Unknown version '{}', using V1.", version_used);
+            version_used = "v1".to_string();
+            compressed_data = compress_v1(&uncompressed_data);
+        }
+    }
+
+    let compressed_len = compressed_data.len();
+
+    // CHECK THE STATS FLAG: Print enhanced compression statistics if enabled.
+    if is_stats_enabled {
+        let compression_ratio = compressed_len as f64 / uncompressed_len as f64;
+        let compression_percentage = (1.0 - compression_ratio) * 100.0;
+        let bytes_saved = uncompressed_len as i64 - compressed_len as i64;
+
+        println!("\n--- Compression Statistics ---");
+        println!("  Version Used:      {}", version_used);
+        println!("  Original Size:     {} bytes", uncompressed_len);
+        println!("  Compressed Size:   {} bytes", compressed_len);
+        println!("  Bytes Saved:       {} bytes", bytes_saved);
+        println!(
+            "  Compression Ratio: {:.3} (Compressed / Original)",
+            compression_ratio
+        );
+        println!("  Compression %:     {:.2}%", compression_percentage);
+    }
+
+    // Write the file
+    let mut compressed_data_file = match std::fs::File::create(output_file_path.clone()) {
+        Ok(file) => file,
+        Err(e) => {
+            eprintln!(
+                "Error creating output file {}: {}",
+                output_file_path.to_string_lossy(),
+                e
+            );
+            return;
+        }
+    };
+
+    if let Err(e) = compressed_data_file.write_all(&compressed_data) {
+        eprintln!("Error writing to output file: {}", e);
+    } else {
+        println!(
+            "Successfully wrote file: {}",
+            output_file_path.to_string_lossy()
+        );
+    }
+}
+
+fn decompress_from_file(
+    input_file_path: OsString,
+    output_file_path: OsString,
+    version: OsString,
+    is_stats_enabled: bool,
+) {
+    if !input_file_path
+        .to_string_lossy()
+        .as_ref()
+        .ends_with(".purgepack")
+    {
+        println!("Not a purgepack compressed file (missing .purgepack extension).");
+        return;
+    }
+
+    let compressed_data = match std::fs::read(&input_file_path) {
+        Ok(data) => data,
+        Err(e) => {
+            eprintln!("Error reading input file {:?}: {}", input_file_path, e);
+            return;
+        }
+    };
+
+    let compressed_len = compressed_data.len();
+    let version_str = version.to_string_lossy().to_string();
+
+    let result_data = match version_str.as_ref() {
         "v1" => decompress_v1(&compressed_data),
         "v2" => decompress_v2(&compressed_data),
         _ => decompress_v1(&compressed_data),
@@ -473,30 +625,27 @@ fn decompress_from_file(
         }
     };
 
-    if deploy.to_string_lossy().as_ref() == "preview" {
-        println!("\n--- Compression Statistics ---");
+    let decompressed_len = decompressed_data.len();
+
+    // Print enhanced decompression statistics if enabled.
+    if is_stats_enabled {
+        let expansion_ratio = decompressed_len as f64 / compressed_len as f64;
+        let expansion_percentage = (expansion_ratio - 1.0) * 100.0;
+        let bytes_restored = decompressed_len as i64 - compressed_len as i64;
+
+        println!("\n--- Decompression Statistics ---");
+        println!("  Version Used:      {}", version_str);
+        println!("  Compressed Size:   {} bytes", compressed_len);
+        println!("  Decompressed Size: {} bytes", decompressed_len);
+        println!("  Bytes Restored:    {} bytes", bytes_restored);
         println!(
-            "  Compressed (Input) Size:  {} bytes",
-            compressed_data.len()
+            "  Expansion Ratio:   {:.3} (Decompressed / Compressed)",
+            expansion_ratio
         );
-        println!(
-            "  Decompressed (Output) Size: {} bytes",
-            decompressed_data.len()
-        );
-        println!(
-            "  Ratio (Decompressed/Compressed): {:.2}",
-            decompressed_data.len() as f32 / compressed_data.len() as f32
-        );
+        println!("  Expansion %:       {:.2}%", expansion_percentage);
     }
 
-    let mut decompressed_data_file = match std::fs::File::create(&output_file_path) {
-        Ok(file) => file,
-        Err(e) => {
-            eprintln!("Error creating output file {:?}: {}", output_file_path, e);
-            return;
-        }
-    };
-
+    // Attempt to convert to UTF-8 if output is .txt
     if output_file_path
         .to_string_lossy()
         .as_ref()
@@ -504,6 +653,15 @@ fn decompress_from_file(
     {
         let _ = String::from_utf8(decompressed_data.clone()).unwrap();
     }
+
+    // Write the output file
+    let mut decompressed_data_file = match std::fs::File::create(&output_file_path) {
+        Ok(file) => file,
+        Err(e) => {
+            eprintln!("Error creating output file {:?}: {}", output_file_path, e);
+            return;
+        }
+    };
 
     match decompressed_data_file.write_all(&decompressed_data) {
         Ok(_) => println!("Successfully written to {:?}", output_file_path),
@@ -522,66 +680,8 @@ fn auto_choice(uncompressed_data: &Vec<u8>) -> &'static str {
     }
 }
 
-const ARGUMENT_FORMAT: &str = "command line argument format should be <main program path> <c|d> <preview|deploy> <in_file> <out_file> <version>";
-
-fn print_argument_format() {
-    println!("{}", ARGUMENT_FORMAT);
-}
-
-fn parse_args(core: &CoreH) -> Result<CliArgs, CliError> {
-    if core.args.len() != 6 {
-        return Err(CliError::InvalidLength);
-    }
-
-    fn osstr_to_string(os_str: &OsString) -> String {
-        os_str.to_string_lossy().into_owned()
-    }
-
-    let operation_arg = &core.args[1];
-    let operation = match operation_arg.to_string_lossy().as_ref() {
-        "c" => Operation::Compress,
-        "d" => Operation::Decompress,
-        _ => return Err(CliError::InvalidOperation(osstr_to_string(operation_arg))),
-    };
-
-    let mode_arg = &core.args[2];
-    let mode = match mode_arg.to_string_lossy().as_ref() {
-        "preview" => Mode::Preview,
-        "deploy" => Mode::Deploy,
-        _ => return Err(CliError::InvalidMode(osstr_to_string(mode_arg))),
-    };
-
-    let in_path = PathBuf::from(&core.args[3]);
-    if !in_path.exists() {
-        return Err(CliError::InputFileNotFound(in_path));
-    }
-    if !in_path.is_file() {
-        return Err(CliError::InputNotFile(in_path));
-    }
-
-    let out_path = PathBuf::from(&core.args[4]);
-    if let Some(parent) = out_path.parent() {
-        if !parent.exists() {
-            return Err(CliError::OutputParentDirNotFound(parent.to_path_buf()));
-        }
-        if !parent.is_dir() {
-            return Err(CliError::OutputParentNotDir(parent.to_path_buf()));
-        }
-    }
-
-    let version_arg = &core.args[5];
-    let version = match version_arg.to_string_lossy().as_ref() {
-        "v1" => Version::V1,
-        "v2" => Version::V2,
-        "auto" => Version::Auto,
-        _ => return Err(CliError::InvalidVersion(osstr_to_string(version_arg))),
-    };
-
-    Ok(CliArgs {
-        operation,
-        mode,
-        in_path,
-        out_path,
-        version,
-    })
+pub fn parse_args() -> Result<CliArgs, CliError> {
+    let args = CliArgs::try_parse()?;
+    args.validate()?;
+    Ok(args)
 }
