@@ -6,11 +6,12 @@
 	],
 	"settings": {
 		"rust-analyzer.linkedProjects": [
-			"./",
+			"./Cargo.toml",
 			"./purgepack/Cargo.toml",
 			"./test_module/Cargo.toml",
 			"./shared_files/Cargo.toml",
-			"./rls_module/Cargo.toml"
+			"./rls_module/Cargo.toml",
+			"./huffman_module/Cargo.toml",
 		],
 		"rust-analyzer.cargo.features": "all"
 	}
