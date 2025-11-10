@@ -1,5 +1,5 @@
 [package]
-name = "test_module"
+name = "huffman_module"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,4 +7,4 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-shared_files = { path = "../shared_files" }
+shared_files ={ path = "../shared_files"}

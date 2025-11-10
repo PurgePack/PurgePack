@@ -1,4 +1,9 @@
-paths = ["purgepack", "test_module", "rls_module"]
+paths = [
+    "purgepack",
+    "test_module",
+    "huffman_module",
+    "rls_module",
+]
 
 [alias]
 b = "build"
@@ -7,7 +12,12 @@ t = "test"
 r = "run"
 rr = "run --release"
 recursive_example = "rr --example recursions"
-space_example = ["run", "--release", "--", "\"command list\""]
+space_example = [
+    "run",
+    "--release",
+    "--",
+    "\"command list\"",
+]
 
 [build]
 target-dir = "target"
