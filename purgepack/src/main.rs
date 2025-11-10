@@ -278,7 +278,6 @@ fn load_modules_linux(
 
     for module in library_names.iter().enumerate() {
         unsafe {
-            println!("{:?}", module.1);
             let library;
 
             match Library::new(module.1) {
