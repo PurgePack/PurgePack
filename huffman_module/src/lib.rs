@@ -596,6 +596,11 @@ fn canonical_huffman(core: &core_header::CoreH) {
     let mut buffer: Vec<u8> = Vec::new();
     let mut file_to_compress;
 
+    if core.args.len() != 4 {
+        println!("Expected 3 arguments, got {}", core.args.len() - 1);
+        return;
+    }
+
     match File::open(core.args[1].clone()) {
         Ok(file) => file_to_compress = file,
         Err(msg) => {

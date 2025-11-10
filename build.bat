@@ -1,65 +1,94 @@
 @echo off
-setlocal EnableDelayedExpansion
+setlocal enabledelayedexpansion
 
-set all=%*
+set DO_CARGO=0
+set DO_PURGEPACK=0
+set "CARGO_ARGS="
+set "PURGEPACK_ARGS="
 
-set run=%1
-if defined run shift
+:parse_loop
+set "arg=%~1"
+if "%arg%"=="" goto after_parse
 
-if "%run%"=="--run" (
-    set state=%1
-    set args=%2
-)
-:: remove surrounding quotes from purgepack args
-if "%run%"=="--run" and "%args:~0,1%"==^" set args=%args:~1,-1%
-if not "%args:~0,1%"==^" set args=""
-
-if defined run shift
-if not "%args%"=="" shift
-if "%run%"=="--release" (
-    set state=--release
-    shift
-)
-
-set RESTVAR=
-shift
-:loop1
-if "%1"=="" goto after_loop
-set RESTVAR=%RESTVAR% %1
-shift
-goto loop1
-:after_loop
-
-if "%state%"=="--release" (
-    echo Building in release mode
-    if "%run%" == "" (
-        cargo build --release %all%
+if "%arg:~0,1%"=="+" (
+    if /I "%arg%"=="+cargo" (
+        set DO_CARGO=1
+        shift
+        goto parse_cargo
+    ) else if /I "%arg%"=="+run" (
+        set DO_PURGEPACK=1
+        shift
+        goto parse_purgepack
     ) else (
-        cargo build --release %RESTVAR%
+        echo Warning: Unknown section marker "%arg%" - ignoring
+        shift
+        goto parse_loop
     )
-    cd .\target\release
-) else (
-    echo Building in debug mode
-    if "%run%" == "" (
-        cargo build %all%
-    ) else (
-        cargo build %RESTVAR%
-    )
-    cd .\target\debug
 )
 
-for %%f in (*.dll) do (
-    if "%%~xf"==".dll" (
-        if not exist ".\modules\" (
-            echo Creating modules folder
-            mkdir ".\modules\"
+echo Warning: Argument "%arg%" outside any section - ignoring
+shift
+goto parse_loop
+
+:parse_cargo
+set "arg=%~1"
+if "%arg%"=="" goto after_parse
+if "%arg:~0,1%"=="+" (
+    goto parse_loop
+)
+set "CARGO_ARGS=!CARGO_ARGS! %arg%"
+shift
+goto parse_cargo
+
+:parse_purgepack
+set "arg=%~1"
+if "%arg%"=="" goto after_parse
+if "%arg:~0,1%"=="+" (
+    goto parse_loop
+)
+set "PURGEPACK_ARGS=!PURGEPACK_ARGS! %arg%"
+shift
+goto parse_purgepack
+
+:after_parse
+if %DO_CARGO%==1 (
+    cargo %CARGO_ARGS%
+
+    if not "%CARGO_ARGS:build=%"=="%CARGO_ARGS%" (
+        if not "%CARGO_ARGS:release=%"=="%CARGO_ARGS%" (
+            cd .\target\release
+        ) else (
+            cd .\target\debug
         )
-        echo Moving %%f to modules folder
-        move "%%f" .\modules\
+    )
+
+    if not exist ".\modules\" (
+        echo Creating modules folder
+        mkdir ".\modules\"
+    )
+
+    for %%f in (*.dll) do (
+        if "%%~xf"==".dll" (
+            echo Moving %%f to modules folder
+            move "%%f" .\modules\
+        )
+    )
+    
+    if errorlevel 1 (
+        echo cargo failed, exiting
+        exit /b %errorlevel%
+    )
+
+    echo BUILD FINISHED
+)
+
+if %DO_PURGEPACK%==1 (
+    .\purgepack.exe %PURGEPACK_ARGS%
+
+    if errorlevel 1 (
+        echo purgepack failed, exiting
+        exit /b %errorlevel%
     )
 )
 
-if "%run%"=="--run" (
-    echo Running purgepack.exe
-    .\purgepack.exe %args%
-)
+exit /b 0
