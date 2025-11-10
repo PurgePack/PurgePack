@@ -34,7 +34,6 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "$DO_CARGO" -eq 1 ]]; then
-    echo "Running cargo ${CARGO_ARGS[*]}"
     if ! cargo "${CARGO_ARGS[@]}"; then
         echo "cargo failed, exiting"
         exit 1
