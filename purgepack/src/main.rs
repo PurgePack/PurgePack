@@ -8,7 +8,7 @@ use libloading::Library;
 #[cfg(target_os = "linux")]
 use libloading::Symbol;
 use shared_files::core_header;
-#[cfg(all(target_os = "windows", feature = "win"))]
+#[cfg(target_os = "windows")]
 use windows::{
     Win32::{
         Foundation::FreeLibrary,
@@ -41,7 +41,7 @@ impl fmt::Display for ModuleError {
 
 impl Error for ModuleError {}
 
-#[cfg(all(target_os = "windows", feature = "win"))]
+#[cfg(target_os = "windows")]
 fn load_modules_windows(
     core: &core_header::CoreH,
     skip_modules: Option<Rc<Vec<OsString>>>,
@@ -314,7 +314,7 @@ fn load_modules_linux(
     return Ok(library_table);
 }
 
-#[cfg(all(target_os = "windows", feature = "win"))]
+#[cfg(target_os = "windows")]
 fn unload_modules_windows(
     core: &core_header::CoreH,
     dll_table: HashMap<PathBuf, HMODULE>,
@@ -415,7 +415,7 @@ fn main() {
     };
 
     let modules;
-    #[cfg(all(target_os = "windows", feature = "win"))]
+    #[cfg(target_os = "windows")]
     match load_modules_windows(&core_header, Some(args)) {
         Ok(data) => modules = data,
         Err(msg) => {
@@ -433,7 +433,7 @@ fn main() {
         }
     }
 
-    #[cfg(all(target_os = "windows", feature = "win"))]
+    #[cfg(target_os = "windows")]
     if let Err(msg) = unload_modules_windows(&core_header, modules) {
         println!("{:?}", msg);
     }
