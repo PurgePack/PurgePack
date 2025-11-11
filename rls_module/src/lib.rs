@@ -1,7 +1,7 @@
+use crate::cli_parse::Version;
 use rand::Rng;
 use shared_files::core_header;
 use std::{
-    ffi::OsString,
     fs::File,
     io::{self, Read, Seek, Write},
     path::PathBuf,
@@ -31,12 +31,7 @@ extern "system" fn module_startup(_core: &core_header::CoreH) {
                         args.stats,
                     );
 
-                    compress_from_file(
-                        input_file,
-                        output_file.into_os_string(),
-                        args.rle_version.to_string().into(),
-                        args.stats,
-                    );
+                    compress_from_file(input_file, output_file, args.rle_version, args.stats);
                 }
                 cli_parse::Commands::Decompress {
                     input_file,
@@ -50,17 +45,13 @@ extern "system" fn module_startup(_core: &core_header::CoreH) {
                         args.stats,
                     );
 
-                    decompress_from_file(
-                        input_file.into_os_string(),
-                        output_file.into_os_string(),
-                        args.rle_version.to_string().into(),
-                        args.stats,
-                    );
+                    decompress_from_file(input_file, output_file, args.rle_version, args.stats);
                 }
             }
         }
         Err(cli_parse::CliError::ClapError(e)) => {
-            e.exit();
+            println!("Error during argument parsing:");
+            eprintln!("{}", e);
         }
         Err(e) => {
             println!("Error during argument validation:");
@@ -94,7 +85,7 @@ extern "system" fn module_startup(_core: &core_header::CoreH) {
 
 #[unsafe(no_mangle)]
 extern "system" fn module_shutdown(_core: &core_header::CoreH) {
-    println!("Goodbye world!");
+    println!("RLS Module shutdown!");
 }
 /// Compresses a byte array using the most basic Run-Length Encoding algorithm.
 ///
@@ -365,8 +356,8 @@ fn push_to_compressed_data(compressed_data: &mut Vec<u8>, count: u8, current_byt
 
 fn compress_from_file(
     input_file_path: PathBuf,
-    output_file_path: OsString,
-    version: OsString,
+    output_file_path: PathBuf,
+    version: cli_parse::Version,
     is_stats_enabled: bool,
 ) {
     let uncompressed_data = match std::fs::read(input_file_path.clone()) {
@@ -382,32 +373,25 @@ fn compress_from_file(
     };
 
     let compressed_data: Vec<u8>;
-    let mut version_used = version.to_string_lossy().to_string();
 
     let uncompressed_len = uncompressed_data.len();
 
+    println!("{:?}", version);
     // Determine which version to use and execute compression
-    match version_used.as_ref() {
-        "v1" => compressed_data = compress_v1(&uncompressed_data),
-        "v2" => compressed_data = compress_v2(&uncompressed_data),
-        "auto" => {
+    match version {
+        cli_parse::Version::One => compressed_data = compress_v1(&uncompressed_data),
+        cli_parse::Version::Two => compressed_data = compress_v2(&uncompressed_data),
+        cli_parse::Version::Auto => {
             let random_chunks = read_multiple_random_chunks(&input_file_path).unwrap();
             let choice = auto_choice_from_chunks(&random_chunks);
-            version_used = choice.to_string();
             match choice {
                 cli_parse::Version::One => compressed_data = compress_v1(&uncompressed_data),
                 cli_parse::Version::Two => compressed_data = compress_v2(&uncompressed_data),
                 _ => {
                     eprintln!("Warning: Auto-choice failed, defaulting to V1.");
-                    version_used = "v1".to_string();
                     compressed_data = compress_v1(&uncompressed_data);
                 }
             }
-        }
-        _ => {
-            eprintln!("Warning: Unknown version '{}', using V1.", version_used);
-            version_used = "v1".to_string();
-            compressed_data = compress_v1(&uncompressed_data);
         }
     }
 
@@ -420,7 +404,7 @@ fn compress_from_file(
         let bytes_saved = uncompressed_len as i64 - compressed_len as i64;
 
         println!("\n--- Compression Statistics ---");
-        println!("  Version Used:      {}", version_used);
+        println!("  Version Used:      {}", version);
         println!("  Original Size:     {} bytes", uncompressed_len);
         println!("  Compressed Size:   {} bytes", compressed_len);
         println!("  Bytes Saved:       {} bytes", bytes_saved);
@@ -447,17 +431,14 @@ fn compress_from_file(
     if let Err(e) = compressed_data_file.write_all(&compressed_data) {
         eprintln!("Error writing to output file: {}", e);
     } else {
-        println!(
-            "Successfully wrote file: {}",
-            output_file_path.to_string_lossy()
-        );
+        println!("Successfully wrote file: {:?}", output_file_path);
     }
 }
 
 fn decompress_from_file(
-    input_file_path: OsString,
-    output_file_path: OsString,
-    version: OsString,
+    input_file_path: PathBuf,
+    output_file_path: PathBuf,
+    version: cli_parse::Version,
     is_stats_enabled: bool,
 ) {
     if !input_file_path
@@ -478,11 +459,10 @@ fn decompress_from_file(
     };
 
     let compressed_len = compressed_data.len();
-    let version_str = version.to_string_lossy().to_string();
 
-    let result_data = match version_str.as_ref() {
-        "v1" => decompress_v1(&compressed_data),
-        "v2" => decompress_v2(&compressed_data),
+    let result_data = match version {
+        Version::One => decompress_v1(&compressed_data),
+        Version::Two => decompress_v2(&compressed_data),
         _ => decompress_v1(&compressed_data),
     };
 
@@ -503,7 +483,7 @@ fn decompress_from_file(
         let bytes_restored = decompressed_len as i64 - compressed_len as i64;
 
         println!("\n--- Decompression Statistics ---");
-        println!("  Version Used:      {}", version_str);
+        println!("  Version Used:      {}", version);
         println!("  Compressed Size:   {} bytes", compressed_len);
         println!("  Decompressed Size: {} bytes", decompressed_len);
         println!("  Bytes Restored:    {} bytes", bytes_restored);
@@ -512,15 +492,6 @@ fn decompress_from_file(
             expansion_ratio
         );
         println!("  Expansion %:       {:.2}%", expansion_percentage);
-    }
-
-    // Attempt to convert to UTF-8 if output is .txt
-    if output_file_path
-        .to_string_lossy()
-        .as_ref()
-        .ends_with(".txt")
-    {
-        let _ = String::from_utf8(decompressed_data.clone()).unwrap();
     }
 
     // Write the output file
