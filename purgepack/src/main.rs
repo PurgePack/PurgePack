@@ -43,7 +43,7 @@ impl Error for ModuleError {}
 #[cfg(target_os = "windows")]
 fn load_modules_windows(
     core: &core_header::CoreH,
-    skip_modules: Option<Rc<Vec<OsString>>>,
+    seperated_args: &HashMap<String, Vec<String>>,
 ) -> Result<HashMap<PathBuf, HMODULE>, ModuleError> {
     use std::{collections::HashMap, fs, path::PathBuf};
 
@@ -99,24 +99,6 @@ fn load_modules_windows(
             None => continue,
         }
 
-        let path = real_path.path();
-        let file_name;
-
-        match path.file_stem() {
-            Some(data) => file_name = data,
-            None => continue,
-        }
-
-        if skip_modules.is_some()
-            && skip_modules
-                .as_ref()
-                .unwrap()
-                .contains(&OsString::from(file_name))
-        {
-            println!("Skipped {:?}", real_path.path().file_stem());
-            continue;
-        }
-
         number_of_modules += 1;
 
         dll_name.push(
@@ -169,10 +151,21 @@ fn load_modules_windows(
                 continue;
             }
 
-            let startup_fn: extern "system" fn(core: &core_header::CoreH) =
+            let startup_fn: extern "C" fn(core: &core_header::CoreH, args: &mut Vec<String>) =
                 std::mem::transmute(func_ptr);
+            let mut module_args: Vec<String>;
 
-            startup_fn(&core);
+            let module_name = format!("+{}", readable_dll_path[module.0].file_stem().unwrap()
+                .to_str().unwrap());
+
+            if let Some(args) = seperated_args.get(&module_name) {
+                module_args = args.clone();
+            }
+            else {
+                module_args = Vec::new();
+            }
+
+            startup_fn(&core, &mut module_args);
 
             dll_table.insert(readable_dll_path[module.0].clone(), handle);
         }
@@ -441,7 +434,7 @@ fn main() {
 
     let modules;
     #[cfg(target_os = "windows")]
-    match load_modules_windows(&core_header, Some(args)) {
+    match load_modules_windows(&core_header, &seperated_args) {
         Ok(data) => modules = data,
         Err(msg) => {
             println!("{:?}", msg);
