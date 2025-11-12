@@ -495,6 +495,61 @@ fn decompress_from_file(
     }
 }
 
+/// Automatically chooses the preferred compression version based on the
+/// compressibility analysis of input data chunks.
+///
+/// This function compares the effectiveness of two distinct compression
+/// algorithms (Version 1 and Version 2) across a series of data chunks. It
+/// selects the version that results in the smallest compressed output size
+/// for the majority of the chunks.
+///
+/// # Arguments
+///
+/// * `chunks`: A reference to a `Vec<Vec<u8>>`, which contains the data
+///   segments (chunks) to be processed. Each inner `Vec<u8>` represents a
+///   separate chunk of data.
+///
+/// # Returns
+///
+/// * `cli_parse::Version`: The recommended compression version:
+///   - `cli_parse::Version::Two`, if the V2 compression proved more effective on the majority of the chunks.
+///   - `cli_parse::Version::One`, if the V1 compression was more effective, or in the case of a tie.
+///
+/// # Logic and Steps
+///
+/// 1. Initializes two counters (`version1_score`, `version2_score`) to zero.
+/// 2. Iterates over every chunk in the `chunks` vector.
+/// 3. Each non-empty chunk is compressed separately using the externally defined
+///    functions `compress_v1()` and `compress_v2()`.
+/// 4. Compares the resulting compressed lengths:
+///    - If V2's output is shorter, `version2_score` is incremented.
+///    - If V1's output is shorter, `version1_score` is incremented.
+/// 5. After processing all chunks, the function returns the version with the
+///    highest score. Version One is chosen in the event of a tie.
+///
+/// # Note on Tie-Breaking
+///
+/// **Version One is explicitly chosen in the event of a tie.**
+///
+/// For practical purposes and to ensure a non-tied result in most cases, **it is recommended**
+/// to use an **odd number of segments (chunks)** when calling this function.
+/// This maximizes the chance of a clear majority decision.
+///
+/// # Example (Assuming necessary definitions)
+///
+/// ```rust
+/// // Assumed: enum Version { One, Two, ... }
+/// // ...
+///
+/// // Javasolt páratlan számú darab (pl. 3, 5, 7, stb.)
+/// let test_data = vec![
+///     vec![0xAA, 0xAA, 0xAA],
+///     vec![0x12, 0x34, 0x56],
+///     vec![0xFF, 0x00, 0xFF],
+/// ];
+///
+/// let chosen_version = auto_choice_from_chunks(&test_data);
+/// ```
 fn auto_choice_from_chunks(chunks: &Vec<Vec<u8>>) -> cli_parse::Version {
     let mut version1_score = 0;
     let mut version2_score = 0;
@@ -521,6 +576,85 @@ fn auto_choice_from_chunks(chunks: &Vec<Vec<u8>>) -> cli_parse::Version {
     }
 }
 
+/// Reads multiple random-access chunks from the specified file path.
+///
+/// This function opens the file, determines its size, and then reads a
+/// predefined number of data segments (NUM_CHUNKS) of a fixed size
+/// (CHUNK_SIZE_BYTES) from random, non-overlapping starting positions
+/// within the file.
+///
+/// Special Case: If the file size is less than or equal to CHUNK_SIZE_BYTES,
+/// the entire file content is read and returned as a single chunk, overriding
+/// the random selection process. If the file is empty, an empty vector is returned.
+///
+/// # Arguments
+///
+/// * `file_path`: A reference to a `&PathBuf`, representing the path to the
+///   file from which the chunks will be read.
+///
+/// # Returns
+///
+/// * `io::Result<Vec<Vec<u8>>>`: An I/O result that contains:
+///   - Success: A `Vec<Vec<u8>>` where each inner vector is a chunk of the
+///     file data. The number of chunks is usually NUM_CHUNKS, and each chunk's
+///     size is CHUNK_SIZE_BYTES (unless the file is smaller than one chunk).
+///   - Error: An `io::Error` if the file cannot be opened, its metadata
+///     cannot be read, or if an I/O operation (seek or read) fails.
+///
+/// # Logic and Steps
+///
+/// 1. File Opening and Size Check: Opens the file and retrieves its size.
+///    If the size is 0, returns an empty vector immediately.
+/// 2. Small File Handling: If the file size is less than or equal to
+///    CHUNK_SIZE_BYTES, the entire content is read into a single buffer,
+///    which is returned as the result.
+/// 3. Random Offset Calculation: Determines the maximum allowed starting
+///    offset (max_start_offset) to ensure a full CHUNK_SIZE_BYTES can always
+///    be read from that position onward.
+/// 4. Chunk Iteration: Loops NUM_CHUNKS times:
+///    a. Generates a random starting offset between $0$ and max_start_offset.
+///    b. Uses `file.seek()` to move the file pointer to the random offset.
+///    c. Reads exactly CHUNK_SIZE_BYTES bytes into a new buffer using
+///       `file.read_exact()`.
+///    d. Appends the read buffer to the result vector.
+/// 5. Final Result: Returns the vector containing all randomly read chunks.
+///
+/// # Assumed Constants
+///
+/// This function relies on two external constants defined in the scope:
+///
+/// * `CHUNK_SIZE_BYTES`: Defines the size of each chunk to be read (in bytes).
+/// * `NUM_CHUNKS`: Defines the total number of chunks to read from the file.
+///
+/// Additionally, it requires a functional `rand::rng()` implementation for
+/// generating the random starting offsets.
+///
+/// # Example (Using assumed constants)
+///
+/// ```rust
+/// use std::path::PathBuf;
+/// use std::io;
+///
+/// // Feltételezett konstansok
+/// // const CHUNK_SIZE_BYTES: usize = 4096;
+/// // const NUM_CHUNKS: usize = 5;
+///
+/// # fn read_multiple_random_chunks(file_path: &PathBuf) -> io::Result<Vec<Vec<u8>>> {
+/// #    // ... (Függvény implementáció) ...
+/// #    Ok(vec![vec![0; 4096]; 5])
+/// # }
+///
+/// let path = PathBuf::from("data.bin");
+/// match read_multiple_random_chunks(&path) {
+///     Ok(chunks) => {
+///         println!("Beolvasva {} darab adat.", chunks.len());
+///         // A darabok feldolgozása...
+///     }
+///     Err(e) => {
+///         eprintln!("Hiba a beolvasáskor: {}", e);
+///     }
+/// }
+/// ```
 fn read_multiple_random_chunks(file_path: &PathBuf) -> io::Result<Vec<Vec<u8>>> {
     let mut file = File::open(file_path)?;
     let file_size = file.metadata()?.len();
@@ -559,7 +693,29 @@ fn read_multiple_random_chunks(file_path: &PathBuf) -> io::Result<Vec<Vec<u8>>> 
 
     Ok(chunks)
 }
-
+/// Formats a byte count (`usize`) into a human-readable string using the
+/// binary unit prefixes (powers of 1024, sometimes referred to as KiB/MiB,
+/// but labeled here as KB/MB/etc.).
+///
+/// The output includes two decimal places for precision and the appropriate unit.
+///
+/// # Arguments
+///
+/// * `bytes` - The size in bytes (`usize`) to be formatted.
+///
+/// # Returns
+///
+/// A `String` containing the human-readable formatted size (e.g., "363.33 KB", "8.58 MB").
+///
+/// # Example
+///
+/// ```
+/// let size_b = 512;
+/// let size_mb = 5242880; // 5 MB
+///
+/// assert_eq!(format_bytes(size_b), "512.00 B");
+/// assert_eq!(format_bytes(size_mb), "5.00 MB");
+/// ```
 fn format_bytes(bytes: usize) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut num = bytes as f64;
@@ -573,6 +729,53 @@ fn format_bytes(bytes: usize) -> String {
     format!("{:.2} {}", num, UNITS[unit_index])
 }
 
+/// Prints detailed statistics for a compression or decompression process.
+///
+/// Calculates the byte difference, compression ratio, percentage savings,
+/// and the speed (MiB/s) based on the provided duration.
+///
+/// # Arguments
+///
+/// * `version_used` - The version of the compression or decompression algorithm used.
+/// * `original_len` - The length of the initial input data in bytes (`usize`).
+/// * `processed_len` - The length of the **compressed** data (if compressing)
+///                      or the **decompressed** data (if decompressing) in bytes (`usize`).
+/// * `duration` - The time taken for the processing (`std::time::Duration`).
+/// * `is_compression` - A boolean indicating whether the statistics are for
+///                      a compression (`true`) or decompression (`false`) operation.
+///
+/// # Example (Compression)
+///
+/// Compression of a highly redundant file, demonstrating a high compression ratio:
+///
+/// ```rust
+/// use std::time::Duration;
+///
+/// // Assume `cli_parse::Version` implements `Display` and a helper like `format_bytes` is available.
+/// let version = 1;
+/// let original = 372054;
+/// let compressed = 3648;
+/// let duration = Duration::from_secs_f64(0.0002746);
+/// let is_compression = true;
+///
+/// // print_statistics(version, original, compressed, duration, is_compression);
+///
+/// // expected output:
+/// // --- Compression Statistics 📊 ---
+/// //       Version Used:          1
+/// //       Original Size:         363.33 KB
+/// //       Compressed Size:       3.56 KB
+/// //       Bytes Difference:      368406 (359.77 KB)
+/// //       Compression Ratio:     101.988:1 (Original / Compressed)
+/// //       Space Saved:           359.77 KB
+/// //       Compression Savings :  99.02(%)
+/// //       Processing Time:       0.000 seconds
+/// //       Compression Speed      1292.13 MiB/s
+/// ```
+///
+/// # Panics
+///
+/// This function does not panic unless the underlying `println!` macro encounters an IO error.
 fn print_statistics(
     version_used: cli_parse::Version,
     original_len: usize,
@@ -580,15 +783,10 @@ fn print_statistics(
     duration: std::time::Duration,
     is_compression: bool,
 ) {
-    let uncompressed_len = if is_compression {
-        original_len
+    let (uncompressed_len, compressed_len) = if is_compression {
+        (original_len, processed_len)
     } else {
-        processed_len
-    };
-    let compressed_len = if is_compression {
-        processed_len
-    } else {
-        original_len
+        (processed_len, original_len)
     };
 
     let ratio_label = "Original";
@@ -597,72 +795,63 @@ fn print_statistics(
     let raw_byte_difference = uncompressed_len as i64 - compressed_len as i64;
     let difference_bytes = raw_byte_difference.abs() as usize;
 
-    let percentage_base = if is_compression {
-        uncompressed_len as f64
-    } else {
-        processed_len as f64
-    };
+    let percentage_base = uncompressed_len as f64;
     let percentage_change = (difference_bytes as f64 / percentage_base) * 100.0;
 
     let speed_mib_s = (uncompressed_len as f64 / (1024.0 * 1024.0)) / duration.as_secs_f64();
 
-    let savings_label: String;
-    let bytes_label: String;
-    let speed_name: &str;
-    let title_name: &str;
-
-    if is_compression {
-        speed_name = "Compression Speed";
-        title_name = "Compression";
-        if compressed_len < uncompressed_len {
-            savings_label = format!("Compression Savings : {:.2}(%)", percentage_change);
-            bytes_label = "Space Saved:".to_string();
-        } else if compressed_len > uncompressed_len {
-            savings_label = format!("File Bloat :          {:.2}(%)", percentage_change);
-            bytes_label = "Space Wasted:".to_string();
-        } else {
-            savings_label = "File Size Change :    0.00% (No Change)".to_string();
-            bytes_label = "Bytes Difference:".to_string();
-        }
+    let speed_name = if is_compression {
+        "Compression Speed"
     } else {
-        speed_name = "Decompression Speed";
-        title_name = "Decompression";
-        if compressed_len < uncompressed_len {
-            savings_label = format!("Compression Savings : {:.2}(%)", percentage_change);
-            bytes_label = "Space Saved:".to_string();
-        } else if compressed_len > uncompressed_len {
-            savings_label = format!("File Bloat :          {:.2}(%)", percentage_change);
-            bytes_label = "Space Wasted:".to_string();
-        } else {
-            savings_label = "File Size Change :    0.00% (No Change)".to_string();
-            bytes_label = "Bytes Difference:".to_string();
-        }
-    }
+        "Decompression Speed"
+    };
+    let title_name = if is_compression {
+        "Compression"
+    } else {
+        "Decompression"
+    };
+
+    let (savings_label, bytes_label) = if compressed_len < uncompressed_len {
+        (
+            format!("Compression Savings : {:.2}(%)", percentage_change),
+            "Space Saved:".to_string(),
+        )
+    } else if compressed_len > uncompressed_len {
+        (
+            format!("File Bloat :          {:.2}(%)", percentage_change),
+            "Space Wasted:".to_string(),
+        )
+    } else {
+        (
+            "File Size Change :    0.00% (No Change)".to_string(),
+            "Bytes Difference:".to_string(),
+        )
+    };
 
     println!("\n--- {} Statistics 📊 ---", title_name);
-    println!("    Version Used:         {}", version_used);
+    println!("    Version Used:         {}", version_used);
     println!(
-        "    Original Size:        {}",
+        "    Original Size:        {}",
         format_bytes(uncompressed_len)
     );
-    println!("    Compressed Size:      {}", format_bytes(compressed_len));
+    println!("    Compressed Size:      {}", format_bytes(compressed_len));
 
     println!(
-        "    Bytes Difference:     {} ({})",
+        "    Bytes Difference:     {} ({})",
         raw_byte_difference,
         format_bytes(raw_byte_difference.abs() as usize)
     );
 
     println!(
-        "    Compression Ratio:    {:.3}:1 ({ratio_label} / Compressed)",
+        "    Compression Ratio:    {:.3}:1 ({ratio_label} / Compressed)",
         compression_ratio_factor
     );
-    println!("    {:<21} {}", bytes_label, format_bytes(difference_bytes));
-    println!("    {}", savings_label);
+    println!("    {:<21} {}", bytes_label, format_bytes(difference_bytes));
+    println!("    {}", savings_label);
 
     println!(
-        "    Processing Time:      {:.3} seconds",
+        "    Processing Time:      {:.3} seconds",
         duration.as_secs_f64()
     );
-    println!("    {:<21} {:.2} MiB/s", speed_name, speed_mib_s);
+    println!("    {:<21} {:.2} MiB/s", speed_name, speed_mib_s);
 }
