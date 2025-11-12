@@ -5,7 +5,7 @@
 //! reads it back and verifies correctness. It uses `BitWriter` and
 //! `BitReader` to operate bit-wise on buffers.
 
-use shared_files::core_header::{self};
+use shared_files::core_header::{self, ping_core};
 use std::{
     cmp::Reverse,
     collections::BinaryHeap,
@@ -589,19 +589,21 @@ fn read_data_canonical(output_path: &str) -> io::Result<Vec<u8>> {
 /// # Usage
 ///
 /// This is intended to be invoked via `module_startup`.
-fn canonical_huffman(core: &core_header::CoreH) {
+fn canonical_huffman(core: &core_header::CoreH, args: &mut Vec<String>) {
+    ping_core(&core);
+
     let debug_whole_timer = Instant::now();
     let mut debug_timer = Instant::now();
 
     let mut buffer: Vec<u8> = Vec::new();
     let mut file_to_compress;
 
-    if core.args.len() != 4 {
-        println!("Expected 3 arguments, got {}", core.args.len() - 1);
+    if args.len() != 3 {
+        println!("Expected 3 arguments, got {}", args.len());
         return;
     }
 
-    match File::open(core.args[1].clone()) {
+    match File::open(&args[0]) {
         Ok(file) => file_to_compress = file,
         Err(msg) => {
             println!("Error: {:?}", msg);
@@ -641,15 +643,14 @@ fn canonical_huffman(core: &core_header::CoreH) {
     println!("Calculated compressed bytes: {:.2?}", debug_timer.elapsed());
 
     debug_timer = Instant::now();
-    let mut comp_path = core.args[2].clone();
-    comp_path.push("/compressed_canonical.purgepack");
+    let comp_path = args[1].clone() + "/compressed_canonical.purgepack";
 
-    write_data_canonical(&code_lengths, &compressed_bits, comp_path.to_str().unwrap());
+    write_data_canonical(&code_lengths, &compressed_bits, &comp_path);
     println!("Wrote data: {:.2?}", debug_timer.elapsed());
     debug_timer = Instant::now();
 
     let back_buffer;
-    match read_data_canonical(comp_path.to_str().unwrap()) {
+    match read_data_canonical(&comp_path) {
         Ok(data) => back_buffer = data,
         Err(msg) => {
             println!("Error: {:?}", msg);
@@ -661,7 +662,7 @@ fn canonical_huffman(core: &core_header::CoreH) {
 
     println!("Does the decompressed file matching?: {}", buffer == back_buffer);
 
-    let res_path = core.args[3].clone();
+    let res_path = args[2].clone();
     let mut result;
     match File::create(res_path) {
         Ok(data) => result = data,
@@ -697,10 +698,10 @@ fn canonical_huffman(core: &core_header::CoreH) {
 
 /// Called when the module starts up: invokes `canonical_huffman`.
 #[unsafe(no_mangle)]
-extern "system" fn module_startup(core: &core_header::CoreH) {
-    canonical_huffman(core);
+extern "C" fn module_startup(core: &core_header::CoreH, args: &mut Vec<String>) {
+    canonical_huffman(core, args);
 }
 
 /// Called when the module is shutting down.
 #[unsafe(no_mangle)]
-extern "system" fn module_shutdown(_core: &core_header::CoreH) {}
+extern "C" fn module_shutdown(_core: &core_header::CoreH) {}
