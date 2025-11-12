@@ -1,0 +1,10 @@
+[package]
+name = "delta_module"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+shared_files = { path = "../shared_files" }

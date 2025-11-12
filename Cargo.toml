@@ -1,7 +1,3 @@
 [workspace]
 resolver = "3"
-members = [
-    "purgepack",
-    "test_module",
-    "huffman_module",
-]
+members = ["purgepack", "test_module", "huffman_module", "delta_module"]
