@@ -10,12 +10,12 @@ set "PURGEPACK_ARGS="
 set "arg=%~1"
 if "%arg%"=="" goto after_parse
 
-if "%arg:~0,1%"=="+" (
-    if /I "%arg%"=="+cargo" (
+if "%arg:~0,1%"=="@" (
+    if /I "%arg%"=="@cargo" (
         set DO_CARGO=1
         shift
         goto parse_cargo
-    ) else if /I "%arg%"=="+run" (
+    ) else if /I "%arg%"=="@run" (
         set DO_PURGEPACK=1
         shift
         goto parse_purgepack
@@ -33,7 +33,7 @@ goto parse_loop
 :parse_cargo
 set "arg=%~1"
 if "%arg%"=="" goto after_parse
-if "%arg:~0,1%"=="+" (
+if "%arg:~0,1%"=="@" (
     goto parse_loop
 )
 set "CARGO_ARGS=!CARGO_ARGS! %arg%"
@@ -43,7 +43,7 @@ goto parse_cargo
 :parse_purgepack
 set "arg=%~1"
 if "%arg%"=="" goto after_parse
-if "%arg:~0,1%"=="+" (
+if "%arg:~0,1%"=="@" (
     goto parse_loop
 )
 set "PURGEPACK_ARGS=!PURGEPACK_ARGS! %arg%"

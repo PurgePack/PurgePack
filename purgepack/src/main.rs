@@ -1,7 +1,6 @@
 use core::fmt;
-use std::env;
-use std::ffi::OsString;
-use std::{error::Error, rc::Rc};
+use std::env::{args};
+use std::{error::Error};
 use std::{collections::HashMap, path::PathBuf};
 #[cfg(target_os = "linux")]
 use libloading::Library;
@@ -34,7 +33,7 @@ impl fmt::Display for ModuleError {
             }
             ModuleError::AllModuleUnloadError(msg) => {
                 write!(f, "Failed to unload all modules: {}", msg)
-            }
+            },
         }
     }
 }
@@ -189,12 +188,11 @@ fn load_modules_windows(
 #[cfg(target_os = "linux")]
 fn load_modules_linux(
     core: &core_header::CoreH,
-    skip_modules: Option<Rc<Vec<OsString>>>,
+    seperated_args: &HashMap<String, Vec<String>>,
 ) -> Result<HashMap<PathBuf, Library>, ModuleError> {
     use std::{collections::HashMap, fs, path::PathBuf};
 
-    let mut library_names: Vec<PathBuf> = Vec::new();
-    let mut readable_library_path = Vec::new();
+    let mut library_names = Vec::new();
 
     let paths;
 
@@ -218,16 +216,16 @@ fn load_modules_linux(
     let mut number_of_modules: usize = 0;
 
     for path in paths {
-        let real_path;
+        let checked_path;
 
         match path {
-            Ok(data) => real_path = data,
+            Ok(data) => checked_path = data,
             Err(_) => continue,
         }
 
         let file_type;
 
-        match real_path.file_type() {
+        match checked_path.file_type() {
             Ok(data) => file_type = data,
             Err(_) => continue,
         }
@@ -236,7 +234,7 @@ fn load_modules_linux(
             continue;
         }
 
-        match real_path.path().extension() {
+        match checked_path.path().extension() {
             Some(data) => {
                 if data.to_ascii_lowercase() != "so" {
                     continue;
@@ -245,28 +243,8 @@ fn load_modules_linux(
             None => continue,
         }
 
-        let path = real_path.path();
-        let file_name;
-
-        match path.file_stem() {
-            Some(data) => file_name = data,
-            None => continue,
-        }
-
-        if skip_modules.is_some()
-            && skip_modules
-                .as_ref()
-                .unwrap()
-                .contains(&OsString::from(file_name))
-        {
-            println!("Skipped {:?}", real_path.path().file_stem());
-            continue;
-        }
-
         number_of_modules += 1;
-
-        library_names.push(real_path.path());
-        readable_library_path.push(real_path.path());
+        library_names.push(checked_path.path());
     }
 
     if number_of_modules <= 0 {
@@ -276,11 +254,11 @@ fn load_modules_linux(
     let mut failed_modules: usize = 0;
     let mut library_table: HashMap<PathBuf, Library> = HashMap::new();
 
-    for module in library_names.iter().enumerate() {
+    for module in library_names {
         unsafe {
             let library;
 
-            match Library::new(module.1) {
+            match Library::new(&module) {
                 Ok(data) => library = data,
                 Err(msg) => {
                     failed_modules += 1;
@@ -289,7 +267,18 @@ fn load_modules_linux(
                 }
             }
 
-            let startup_fn: Symbol<extern "system" fn(core: &core_header::CoreH)>;
+            let startup_fn: Symbol<extern "C" fn(core: &core_header::CoreH, args: &mut Vec<String>)>;
+            let mut module_args: Vec<String>;
+
+            let module_name = format!("+{}", module.file_stem().unwrap().to_str().unwrap()
+                .strip_prefix("lib").unwrap());
+
+            if let Some(args) = seperated_args.get(&module_name) {
+                module_args = args.clone();
+            }
+            else {
+                module_args = Vec::new();
+            }
 
             match library.get(b"module_startup\0") {
                 Ok(func) => startup_fn = func,
@@ -300,9 +289,9 @@ fn load_modules_linux(
                 }
             }
 
-            startup_fn(&core);
+            startup_fn(&core, &mut module_args);
 
-            library_table.insert(readable_library_path[module.0].clone(), library);
+            library_table.insert(module, library);
         }
     }
 
@@ -368,7 +357,7 @@ fn unload_modules_linux(
 
     for (_module_path, handle) in library_table.iter() {
         unsafe {
-            let shutdown_fn: Symbol<extern "system" fn(core: &core_header::CoreH)>;
+            let shutdown_fn: Symbol<extern "C" fn(core: &core_header::CoreH)>;
 
             match handle.get(b"module_shutdown\0") {
                 Ok(func) => shutdown_fn = func,
@@ -406,11 +395,48 @@ fn unload_modules_linux(
     Ok(())
 }
 
+fn ping_core() {
+    println!("Pinged core!");
+}
+
 fn main() {
-    let args = Rc::new(env::args_os().collect::<Vec<_>>());
+    let args = args().collect::<Vec<_>>();
+    let mut seperated_args = HashMap::new();
+    let mut last_main_arg = "";
+
+    for (i, arg) in args.iter().enumerate() {
+        if i == 0 && !arg.contains('+') {
+            continue;
+        }
+
+        if i == 1 && !arg.contains('+') {
+            println!("Wrong argument format provided");
+            println!("{arg}");
+            return;
+        }
+        else if i == 1 {
+            last_main_arg = arg;
+        }
+
+        if arg.contains('+') {
+            seperated_args.insert(arg.clone(), Vec::new());
+            last_main_arg = arg;
+            continue;
+        }
+        
+        if seperated_args.contains_key(last_main_arg) {
+            seperated_args.get_mut(last_main_arg).unwrap().push(arg.clone());
+        }
+    }
+
+    if let Some(core_args) = seperated_args.get("+core") {
+        if core_args.contains(&String::from("ping")) {
+            ping_core();
+        }
+    }
 
     let core_header = core_header::CoreH {
-        args: args.clone(),
+        ping_core_f: ping_core,
     };
 
     let modules;
@@ -424,7 +450,7 @@ fn main() {
     }
 
     #[cfg(target_os = "linux")]
-    match load_modules_linux(&core_header, Some(args)) {
+    match load_modules_linux(&core_header, &seperated_args) {
         Ok(data) => modules = data,
         Err(msg) => {
             println!("{:?}", msg);
