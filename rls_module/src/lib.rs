@@ -15,8 +15,9 @@ const CHUNK_SIZE_BYTES: usize = 1024;
 const NUM_CHUNKS: usize = 5;
 
 #[unsafe(no_mangle)]
-extern "system" fn module_startup(_core: &core_header::CoreH) {
-    match cli_parse::parse_args() {
+extern "C" fn module_startup(_core: &core_header::CoreH, args: &mut Vec<String>) {
+    args.insert(0, "dummy_program_name".to_string());
+    match cli_parse::parse_args(args) {
         Ok(args) => {
             println!("Valid argument configuration loaded: {:?}", args);
             match args.command {
@@ -85,7 +86,7 @@ extern "system" fn module_startup(_core: &core_header::CoreH) {
 }
 
 #[unsafe(no_mangle)]
-extern "system" fn module_shutdown(_core: &core_header::CoreH) {
+extern "C" fn module_shutdown(_core: &core_header::CoreH) {
     println!("RLS Module shutdown!");
 }
 /// Compresses a byte array using the most basic Run-Length Encoding algorithm.

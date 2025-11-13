@@ -150,10 +150,10 @@ impl From<clap::Error> for CliError {
         CliError::ClapError(error)
     }
 }
-/// Public function to parse and validate CLI arguments.
-/// This is the entry point for argument handling from the main module.
-pub fn parse_args() -> Result<CliArgs, CliError> {
-    let args = CliArgs::try_parse()?;
+
+/// Allows for parsing command line arguments and validating them.
+pub fn parse_args(args: &Vec<String>) -> Result<CliArgs, CliError> {
+    let args = CliArgs::try_parse_from(args.iter().map(|s| s.as_ref() as &str))?;
     args.validate()?;
     Ok(args)
 }
