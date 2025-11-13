@@ -105,6 +105,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
+name = "delta_module"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "shared_files",
+]
+
+[[package]]
 name = "getrandom"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -114,11 +122,6 @@ dependencies = [
  "libc",
  "r-efi",
  "wasip2",
-name = "delta_module"
-version = "0.1.0"
-dependencies = [
- "clap",
- "shared_files",
 ]
 
 [[package]]
@@ -403,9 +406,6 @@ dependencies = [
 
 [[package]]
 name = "windows-targets"
-version = "0.53.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d42b7b7f66d2a06854650af09cfdf8713e427a439c97ad65a6375318033ac4b"
 version = "0.53.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4945f9f551b88e0d65f3db0bc25c33b8acea4d9e41163edf90dcd0b19f9069f3"
