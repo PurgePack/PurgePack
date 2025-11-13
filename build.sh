@@ -10,18 +10,18 @@ while [[ $# -gt 0 ]]; do
     arg="$1"
 
     case "$arg" in
-        +cargo)
+        _cargo)
             DO_CARGO=1
             shift
-            while [[ $# -gt 0 && "$1" != +* ]]; do
+            while [[ $# -gt 0 && "$1" != _* ]]; do
                 CARGO_ARGS+=("$1")
                 shift
             done
             ;;
-        +run)
+        _run)
             DO_PURGEPACK=1
             shift
-            while [[ $# -gt 0 && "$1" != +* ]]; do
+            while [[ $# -gt 0 && "$1" != _* ]]; do
                 PURGEPACK_ARGS+=("$1")
                 shift
             done
