@@ -1,5 +1,9 @@
-use std::{ffi::OsString, rc::Rc};
+pub const FILE_EXTENSION: &'static str = ".ppcb";
 
 pub struct CoreH {
-    pub args: Rc<Vec<OsString>>,
+    pub ping_core_f: fn(),
+}
+
+pub fn ping_core(core: &CoreH) {
+    (core.ping_core_f)()
 }

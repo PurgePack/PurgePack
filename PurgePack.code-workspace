@@ -12,6 +12,7 @@
 			"./shared_files/Cargo.toml",
 			"./rls_module/Cargo.toml",
 			"./huffman_module/Cargo.toml",
+			"./delta_module/Cargo.toml",
 		],
 		"rust-analyzer.cargo.features": "all"
 	}

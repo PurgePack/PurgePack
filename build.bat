@@ -10,16 +10,18 @@ set "PURGEPACK_ARGS="
 set "arg=%~1"
 if "%arg%"=="" goto after_parse
 
-if "%arg:~0,1%"=="+" (
-    if /I "%arg%"=="+cargo" (
+if "%arg:~0,1%"=="_" (
+    if /I "%arg%"=="_cargo" (
         set DO_CARGO=1
         shift
         goto parse_cargo
-    ) else if /I "%arg%"=="+run" (
+    )
+    if /I "%arg%"=="_run" (
         set DO_PURGEPACK=1
         shift
         goto parse_purgepack
-    ) else (
+    ) 
+    if not "%arg%"=="_run" or "%arg%"=="_cargo"(
         echo Warning: Unknown section marker "%arg%" - ignoring
         shift
         goto parse_loop
@@ -33,7 +35,7 @@ goto parse_loop
 :parse_cargo
 set "arg=%~1"
 if "%arg%"=="" goto after_parse
-if "%arg:~0,1%"=="+" (
+if "%arg:~0,1%"=="_" (
     goto parse_loop
 )
 set "CARGO_ARGS=!CARGO_ARGS! %arg%"
@@ -43,7 +45,7 @@ goto parse_cargo
 :parse_purgepack
 set "arg=%~1"
 if "%arg%"=="" goto after_parse
-if "%arg:~0,1%"=="+" (
+if "%arg:~0,1%"=="_" (
     goto parse_loop
 )
 set "PURGEPACK_ARGS=!PURGEPACK_ARGS! %arg%"

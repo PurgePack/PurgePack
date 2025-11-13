@@ -3,6 +3,7 @@ paths = [
     "test_module",
     "huffman_module",
     "rls_module",
+    "delta_module",
 ]
 
 [alias]
@@ -12,12 +13,7 @@ t = "test"
 r = "run"
 rr = "run --release"
 recursive_example = "rr --example recursions"
-space_example = [
-    "run",
-    "--release",
-    "--",
-    "\"command list\"",
-]
+space_example = ["run", "--release", "--", "\"command list\""]
 
 [build]
 target-dir = "target"
