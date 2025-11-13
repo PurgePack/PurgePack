@@ -37,7 +37,22 @@ pub struct CompressionStats {
 }
 
 impl CompressionStats {
-    /// Calculates all relevant statistics and returns the populated struct.
+    /// Constructor for the CompressionStats struct.
+    /// # Arguments
+    /// * `algorithm_name` - The name of the compression algorithm used.
+    /// * `algorithm_id` - The ID of the compression algorithm used.
+    /// * `version_used` - The version of the compression algorithm used.
+    /// * `original_len` - The original size of the input data in bytes.
+    /// * `processed_len` - The size of the processed data in bytes.
+    /// * `duration` - The duration of the compression or decompression process.
+    /// * `is_compression` - A boolean flag indicating whether the process is a compression or decompression operation.
+    /// # Returns
+    /// * `CompressionStats` - A new instance of the CompressionStats struct.
+    /// # Examples
+    /// ```rust
+    /// use shared_files::stats::CompressionStats;
+    /// let stats = CompressionStats::calculate_stats("LZ4", 1, 1, 1024, 512, Duration::from_secs(1), true);
+    /// ```
     pub fn calculate_stats(
         algorithm_name: &'static str,
         algorithm_id: u8,
@@ -76,6 +91,17 @@ impl CompressionStats {
 
 // Implement the Display trait to define exactly how the statistics struct is printed.
 impl Display for CompressionStats {
+    // Define the formatting logic for the CompressionStats struct.
+    // # Arguments
+    // * `f` - A mutable reference to the formatter object.
+    // # Returns
+    // * `fmt::Result` - The result of the formatting operation.
+    // # Examples
+    // ```rust
+    // use shared_files::stats::CompressionStats;
+    // let stats = CompressionStats::calculate_stats("LZ4", 1, 1, 1024, 512, Duration::from_secs(1), true);
+    // println!("{}", stats);
+    // ```
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (uncompressed_len, compressed_len) = if self.is_compression {
             (self.original_len, self.processed_len)
