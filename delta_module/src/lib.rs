@@ -2,9 +2,11 @@ use std::{
     fs::File,
     io::{self, BufRead, Read, Write},
     path::{self},
+    time::Instant,
 };
 mod cli_parse;
 use shared_files::core_header::{self};
+use shared_files::stats::CompressionStats;
 
 /// The direction of the transformation (Encode or Decode).
 #[derive(Debug, Clone, Copy)]
@@ -144,7 +146,7 @@ fn start_proccessing_file(
     input_file: path::PathBuf,
     mut output_file: path::PathBuf,
     transform_type: Transform,
-    _stats: bool,
+    stats: bool,
 ) -> Result<(), io::Error> {
     if let Transform::Decode = transform_type {
         let has_correct_extension = input_file.extension().map_or(false, |ext| {
@@ -175,11 +177,13 @@ fn start_proccessing_file(
         }
     }
     let input = File::open(input_file)?;
+    let original_len = input.metadata()?.len() as usize;
     let output = File::create(output_file)?;
     let mut buff_reader = std::io::BufReader::new(input);
     let mut buff_writer = std::io::BufWriter::new(output);
     let mut previous_byte: u8;
 
+    let start_time = Instant::now();
     match transform_type {
         Transform::Encode => write_header(&mut buff_writer)?,
         Transform::Decode => {
@@ -192,6 +196,21 @@ fn start_proccessing_file(
         Ok(Some(value)) => value,
         Ok(None) => {
             buff_writer.flush()?;
+            if stats {
+                let duration = start_time.elapsed();
+                let output_len = buff_writer.get_ref().metadata()?.len() as usize;
+
+                let calculated_stats = CompressionStats::calculate_stats(
+                    "Delta Transform",
+                    MODULE_ID,
+                    1,
+                    original_len,
+                    output_len,
+                    duration,
+                    matches!(transform_type, Transform::Encode),
+                );
+                println!("{}", calculated_stats);
+            }
             return Ok(());
         }
         Err(e) => return Err(e),
@@ -213,6 +232,21 @@ fn start_proccessing_file(
     }
 
     buff_writer.flush()?;
+    if stats {
+        let duration = start_time.elapsed();
+        let output_len = buff_writer.get_ref().metadata()?.len() as usize;
+
+        let calculated_stats = CompressionStats::calculate_stats(
+            "Delta Transform",
+            MODULE_ID,
+            1,
+            original_len,
+            output_len,
+            duration,
+            matches!(transform_type, Transform::Encode),
+        );
+        println!("{}", calculated_stats);
+    }
     Ok(())
 }
 /// Performs the delta encoding or decoding on a single chunk of data.
