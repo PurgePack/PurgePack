@@ -37,8 +37,9 @@ const FILE_EXTENSION: &str = "ppcb";
 /// 3. Initiating the file processing via `start_proccessing_file`.
 /// 4. Handling and reporting any CLI parsing or file processing errors.
 #[unsafe(no_mangle)]
-extern "system" fn module_startup(_core: &core_header::CoreH) {
-    match cli_parse::parse_args() {
+extern "C" fn module_startup(_core: &core_header::CoreH, args: &mut Vec<String>) {
+    args.insert(0, "dummy_program_name".to_string());
+    match cli_parse::parse_args(&args) {
         Ok(args) => match args.command {
             cli_parse::Commands::Transform(args) => {
                 println!(
@@ -119,7 +120,7 @@ extern "system" fn module_startup(_core: &core_header::CoreH) {
 
 /// The shutdown function for the module.
 #[unsafe(no_mangle)]
-extern "system" fn module_shutdown(_core: &core_header::CoreH) {
+extern "C" fn module_shutdown(_core: &core_header::CoreH) {
     println!("Delta encoder module shutting down.");
 }
 /// Initializes the file handles and coordinates the chunk-by-chunk delta transformation.

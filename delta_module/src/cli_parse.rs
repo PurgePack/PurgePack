@@ -7,7 +7,7 @@ pub struct CommonArgs {
     pub input_file: PathBuf,
     /// The path where the output file will be written.
     pub output_file: PathBuf,
-    /// Enables statistics output
+    /// Enables statistics output.
     #[arg(short, long)]
     pub stats: bool,
 }
@@ -115,8 +115,8 @@ impl From<clap::Error> for CliError {
 }
 
 /// Allows for parsing command line arguments and validating them.
-pub fn parse_args() -> Result<CliArgs, CliError> {
-    let args = CliArgs::try_parse()?;
+pub fn parse_args(args: &Vec<String>) -> Result<CliArgs, CliError> {
+    let args = CliArgs::try_parse_from(args.iter().map(|s| s.as_ref() as &str))?;
     args.validate()?;
     Ok(args)
 }
