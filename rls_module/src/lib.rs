@@ -9,6 +9,8 @@ use std::{
 };
 mod cli_parse;
 
+use shared_files::stats::CompressionStats;
+
 const MAX_RUN_LENGTH: u8 = u8::MAX;
 const ESCAPE_BYTE: u8 = u8::MIN;
 const CHUNK_SIZE_BYTES: usize = 1024;
@@ -375,9 +377,6 @@ fn compress_from_file(
     };
 
     let compressed_data: Vec<u8>;
-
-    let uncompressed_len = uncompressed_data.len();
-
     let mut versiom_chosen = version;
     println!("{:?}", version);
     let start_time = Instant::now();
@@ -401,16 +400,25 @@ fn compress_from_file(
         }
     }
     let duration = start_time.elapsed();
-
-    let compressed_len = compressed_data.len();
     if is_stats_enabled {
-        print_statistics(
-            versiom_chosen,
-            uncompressed_len,
-            compressed_len,
+        let stats = CompressionStats::calculate_stats(
+            "Run Length Encoding",
+            1,
+            match versiom_chosen {
+                cli_parse::Version::One => 1,
+                cli_parse::Version::Two => 2,
+                cli_parse::Version::Auto => {
+                    unreachable!(
+                        "auto_choice_from_chunks function should never return unspecified version"
+                    );
+                }
+            },
+            uncompressed_data.len(),
+            compressed_data.len(),
             duration,
             true,
         );
+        println!("{}", stats);
     }
 
     // Write the file
@@ -456,8 +464,6 @@ fn decompress_from_file(
         }
     };
 
-    let compressed_len = compressed_data.len();
-
     let start_time = Instant::now();
 
     let result_data = match version {
@@ -476,10 +482,25 @@ fn decompress_from_file(
         }
     };
 
-    let decompressed_len = decompressed_data.len();
-
     if is_stats_enabled {
-        print_statistics(version, compressed_len, decompressed_len, duration, false);
+        let stats = CompressionStats::calculate_stats(
+            "Run Length Encoding",
+            1,
+            match version {
+                cli_parse::Version::One => 1,
+                cli_parse::Version::Two => 2,
+                cli_parse::Version::Auto => {
+                    unreachable!(
+                        "auto_choice_from_chunks function should never return unspecified version"
+                    );
+                }
+            },
+            compressed_data.len(),
+            decompressed_data.len(),
+            duration,
+            false,
+        );
+        println!("{}", stats);
     }
 
     let mut decompressed_data_file = match std::fs::File::create(&output_file_path) {
@@ -693,166 +714,4 @@ fn read_multiple_random_chunks(file_path: &PathBuf) -> io::Result<Vec<Vec<u8>>> 
     }
 
     Ok(chunks)
-}
-/// Formats a byte count (`usize`) into a human-readable string using the
-/// binary unit prefixes (powers of 1024, sometimes referred to as KiB/MiB,
-/// but labeled here as KB/MB/etc.).
-///
-/// The output includes two decimal places for precision and the appropriate unit.
-///
-/// # Arguments
-///
-/// * `bytes` - The size in bytes (`usize`) to be formatted.
-///
-/// # Returns
-///
-/// A `String` containing the human-readable formatted size (e.g., "363.33 KB", "8.58 MB").
-///
-/// # Example
-///
-/// ```
-/// let size_b = 512;
-/// let size_mb = 5242880; // 5 MB
-///
-/// assert_eq!(format_bytes(size_b), "512.00 B");
-/// assert_eq!(format_bytes(size_mb), "5.00 MB");
-/// ```
-fn format_bytes(bytes: usize) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut num = bytes as f64;
-    let mut unit_index = 0;
-
-    while num >= 1024.0 && unit_index < UNITS.len() - 1 {
-        num /= 1024.0;
-        unit_index += 1;
-    }
-
-    format!("{:.2} {}", num, UNITS[unit_index])
-}
-
-/// Prints detailed statistics for a compression or decompression process.
-///
-/// Calculates the byte difference, compression ratio, percentage savings,
-/// and the speed (MiB/s) based on the provided duration.
-///
-/// # Arguments
-///
-/// * `version_used` - The version of the compression or decompression algorithm used.
-/// * `original_len` - The length of the initial input data in bytes (`usize`).
-/// * `processed_len` - The length of the **compressed** data (if compressing)
-///                      or the **decompressed** data (if decompressing) in bytes (`usize`).
-/// * `duration` - The time taken for the processing (`std::time::Duration`).
-/// * `is_compression` - A boolean indicating whether the statistics are for
-///                      a compression (`true`) or decompression (`false`) operation.
-///
-/// # Example (Compression)
-///
-/// Compression of a highly redundant file, demonstrating a high compression ratio:
-///
-/// ```rust
-/// use std::time::Duration;
-///
-/// // Assume `cli_parse::Version` implements `Display` and a helper like `format_bytes` is available.
-/// let version = 1;
-/// let original = 372054;
-/// let compressed = 3648;
-/// let duration = Duration::from_secs_f64(0.0002746);
-/// let is_compression = true;
-///
-/// // print_statistics(version, original, compressed, duration, is_compression);
-///
-/// // expected output:
-/// // --- Compression Statistics 📊 ---
-/// //       Version Used:          1
-/// //       Original Size:         363.33 KB
-/// //       Compressed Size:       3.56 KB
-/// //       Bytes Difference:      368406 (359.77 KB)
-/// //       Compression Ratio:     101.988:1 (Original / Compressed)
-/// //       Space Saved:           359.77 KB
-/// //       Compression Savings :  99.02(%)
-/// //       Processing Time:       0.000 seconds
-/// //       Compression Speed      1292.13 MiB/s
-/// ```
-///
-/// # Panics
-///
-/// This function does not panic unless the underlying `println!` macro encounters an IO error.
-fn print_statistics(
-    version_used: cli_parse::Version,
-    original_len: usize,
-    processed_len: usize,
-    duration: std::time::Duration,
-    is_compression: bool,
-) {
-    let (uncompressed_len, compressed_len) = if is_compression {
-        (original_len, processed_len)
-    } else {
-        (processed_len, original_len)
-    };
-
-    let ratio_label = "Original";
-    let compression_ratio_factor = uncompressed_len as f64 / compressed_len as f64;
-
-    let raw_byte_difference = uncompressed_len as i64 - compressed_len as i64;
-    let difference_bytes = raw_byte_difference.abs() as usize;
-
-    let percentage_base = uncompressed_len as f64;
-    let percentage_change = (difference_bytes as f64 / percentage_base) * 100.0;
-
-    let speed_mib_s = (uncompressed_len as f64 / (1024.0 * 1024.0)) / duration.as_secs_f64();
-
-    let speed_name = if is_compression {
-        "Compression Speed"
-    } else {
-        "Decompression Speed"
-    };
-    let title_name = if is_compression {
-        "Compression"
-    } else {
-        "Decompression"
-    };
-
-    let (savings_label, bytes_label) = if compressed_len < uncompressed_len {
-        (
-            format!("Compression Savings : {:.2}(%)", percentage_change),
-            "Space Saved:".to_string(),
-        )
-    } else if compressed_len > uncompressed_len {
-        (
-            format!("File Bloat :          {:.2}(%)", percentage_change),
-            "Space Wasted:".to_string(),
-        )
-    } else {
-        (
-            "File Size Change :    0.00% (No Change)".to_string(),
-            "Bytes Difference:".to_string(),
-        )
-    };
-
-    println!("\n--- {} Statistics 📊 ---", title_name);
-    println!("    Version Used:         {}", version_used);
-    println!(
-        "    Original Size:        {}",
-        format_bytes(uncompressed_len)
-    );
-    println!("    Compressed Size:      {}", format_bytes(compressed_len));
-
-    println!(
-        "    Bytes Difference:     {} ({})",
-        raw_byte_difference,
-        format_bytes(raw_byte_difference.abs() as usize)
-    );
-
-    println!(
-        "    Compression Ratio:    {:.3}:1 ({ratio_label} / Compressed)",
-        compression_ratio_factor
-    );
-    println!("    {:<21} {}", bytes_label, format_bytes(difference_bytes));
-    println!("    {}", savings_label);
-
-    println!(
-        "    Processing Time:      {:.3} seconds",
-        duration.as_secs_f64()
-    );
-    println!("    {:<21} {:.2} MiB/s", speed_name, speed_mib_s);
 }
