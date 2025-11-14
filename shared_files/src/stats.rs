@@ -27,7 +27,7 @@
 //! measurement and the flexible [`OptinalStatsTimer`] for detailed, conditional step timing.
 //!
 //! ```rust
-//! use crate::{
+//! use crate::stats::{
 //!     StatsTimer, OptinalStatsTimer, CompressionStatsBuilder, SectionStats, BuilderError,
 //!     CompressionStats
 //! };
