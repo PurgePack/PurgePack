@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+indexmap = "2.12.0"
 libloading = "0.9.0"
 shared_files = { path = "../shared_files" }
 

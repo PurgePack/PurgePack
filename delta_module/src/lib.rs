@@ -38,7 +38,6 @@ const FILE_EXTENSION: &str = "ppcb";
 /// 4. Handling and reporting any CLI parsing or file processing errors.
 #[unsafe(no_mangle)]
 extern "C" fn module_startup(_core: &core_header::CoreH, args: &mut Vec<String>) {
-    args.insert(0, "dummy_program_name".to_string());
     match cli_parse::parse_args(&args) {
         Ok(args) => match args.command {
             cli_parse::Commands::Transform(args) => {

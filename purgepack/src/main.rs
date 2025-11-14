@@ -1,12 +1,14 @@
 use core::fmt;
+use std::collections::VecDeque;
 use std::env::{args};
 use std::{error::Error};
-use std::{collections::HashMap, path::PathBuf};
+use std::{path::PathBuf};
+use indexmap::IndexMap;
 #[cfg(target_os = "linux")]
 use libloading::Library;
 #[cfg(target_os = "linux")]
 use libloading::Symbol;
-use shared_files::core_header;
+use shared_files::core_header::*;
 #[cfg(target_os = "windows")]
 use windows::{
     Win32::{
@@ -17,22 +19,57 @@ use windows::{
     core::{PCSTR, PCWSTR},
 };
 
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct Module {
+    path: PathBuf,
+    module: Library,
+}
+
+impl Module {
+    fn start(&self, core: &CoreH, args: &mut Vec<String>) -> Result<(), ModuleError> {
+        let startup_fn: Symbol<extern "C" fn(core: &CoreH, args: &mut Vec<String>)>;
+
+        unsafe {
+            match self.module.get(b"module_startup\0") {
+                Ok(func) => startup_fn = func,
+                Err(msg) => {
+                    return Err(ModuleError::LoadError(String::from(
+                        format!(
+                            "Failed to find module_startup function in {:?}: {:?}",
+                            self.path.file_stem().unwrap(),
+                            msg
+                        )
+                    )));
+                }
+            }
+        }
+
+        startup_fn(core, args);
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "windows")]
+struct Module {
+    path: PathBuf,
+    module: HMODULE,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum ModuleError {
-    FileSystemError(String),
-    AllModuleLoadError(String),
-    AllModuleUnloadError(String),
+    LoadError(String),
+    UnloadError(String),
 }
 
 impl fmt::Display for ModuleError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            ModuleError::FileSystemError(msg) => write!(f, "A filesystem error occured: {}", msg),
-            ModuleError::AllModuleLoadError(msg) => {
-                write!(f, "All modules failed to load: {}", msg)
+            ModuleError::LoadError(msg) => {
+                write!(f, "{}", msg)
             }
-            ModuleError::AllModuleUnloadError(msg) => {
-                write!(f, "Failed to unload all modules: {}", msg)
+            ModuleError::UnloadError(msg) => {
+                write!(f, "{}", msg)
             },
         }
     }
@@ -179,11 +216,98 @@ fn load_modules_windows(
 }
 
 #[cfg(target_os = "linux")]
+fn load_module_linux(
+    module_name: &String,
+) -> Result<Module, ModuleError> {
+    use std::{fs, path::PathBuf};
+
+    let paths;
+    let mut library_file: Option<PathBuf> = None;
+
+    match fs::read_dir("modules") {
+        Ok(data) => paths = data,
+        Err(msg) => {
+            if let Err(msg2) = fs::create_dir("modules") {
+                return Err(ModuleError::LoadError(format!(
+                    "Failed to create module folder: {:?}",
+                    msg2
+                )));
+            }
+
+            return Err(ModuleError::LoadError(format!(
+                "Module folder (\"module\') was missing and has been created: {:?}",
+                msg
+            )));
+        }
+    }
+
+    for path in paths {
+        let checked_path;
+
+        match path {
+            Ok(data) => checked_path = data,
+            Err(_) => continue,
+        }
+
+        let file_type;
+
+        match checked_path.file_type() {
+            Ok(data) => file_type = data,
+            Err(_) => continue,
+        }
+
+        if !file_type.is_file() {
+            continue;
+        }
+
+        match checked_path.path().extension() {
+            Some(data) => {
+                if data.to_ascii_lowercase() != "so" {
+                    continue;
+                }
+            }
+            None => continue,
+        }
+
+        match checked_path.path().file_stem() {
+            Some(file_name) => {
+                if let Some(f_name) = file_name.to_str()
+                && f_name.strip_prefix("lib").unwrap() == module_name {
+                    library_file = Some(checked_path.path());
+                    break;
+                }
+                continue;
+            },
+            None => continue,
+        }
+    }
+
+    if library_file.is_none() {
+        return Err(ModuleError::LoadError(format!("Module {} not found!", module_name)));
+    }
+
+    let library;
+
+    unsafe {
+        match Library::new(library_file.as_ref().unwrap()) {
+            Ok(data) => library = data,
+            Err(msg) => {
+                return Err(ModuleError::LoadError(String::from(
+                    format!("Module {} failed to load: {:?}", module_name, msg)
+                )));
+            }
+        }
+    }
+
+    return Ok(Module { path: library_file.unwrap(), module: library });
+}
+
+#[cfg(target_os = "linux")]
 fn load_modules_linux(
-    core: &core_header::CoreH,
-    seperated_args: &HashMap<String, Vec<String>>,
-) -> Result<HashMap<PathBuf, Library>, ModuleError> {
-    use std::{collections::HashMap, fs, path::PathBuf};
+    core: &CoreH,
+    args: &Vec<String>,
+) -> Result<Vec<Module>, ModuleError> {
+    use std::{fs};
 
     let mut library_names = Vec::new();
 
@@ -193,13 +317,13 @@ fn load_modules_linux(
         Ok(data) => paths = data,
         Err(msg) => {
             if let Err(msg2) = fs::create_dir("modules") {
-                return Err(ModuleError::FileSystemError(format!(
+                return Err(ModuleError::LoadError(format!(
                     "Failed to create module folder: {:?}",
                     msg2
                 )));
             }
 
-            return Err(ModuleError::AllModuleLoadError(format!(
+            return Err(ModuleError::LoadError(format!(
                 "Module folder (\"module\') was missing and has been created: {:?}",
                 msg
             )));
@@ -241,17 +365,17 @@ fn load_modules_linux(
     }
 
     if number_of_modules <= 0 {
-        return Err(ModuleError::FileSystemError(format!("Found no modules!")));
+        return Err(ModuleError::LoadError(String::from("Found no modules!")));
     }
 
     let mut failed_modules: usize = 0;
-    let mut library_table: HashMap<PathBuf, Library> = HashMap::new();
+    let mut libraries = Vec::new();
 
-    for module in library_names {
+    for module_path in library_names {
         unsafe {
             let library;
 
-            match Library::new(&module) {
+            match Library::new(&module_path) {
                 Ok(data) => library = data,
                 Err(msg) => {
                     failed_modules += 1;
@@ -260,18 +384,7 @@ fn load_modules_linux(
                 }
             }
 
-            let startup_fn: Symbol<extern "C" fn(core: &core_header::CoreH, args: &mut Vec<String>)>;
-            let mut module_args: Vec<String>;
-
-            let module_name = format!("+{}", module.file_stem().unwrap().to_str().unwrap()
-                .strip_prefix("lib").unwrap());
-
-            if let Some(args) = seperated_args.get(&module_name) {
-                module_args = args.clone();
-            }
-            else {
-                module_args = Vec::new();
-            }
+            let startup_fn: Symbol<extern "C" fn(core: &CoreH, args: &mut Vec<String>)>;
 
             match library.get(b"module_startup\0") {
                 Ok(func) => startup_fn = func,
@@ -282,9 +395,10 @@ fn load_modules_linux(
                 }
             }
 
-            startup_fn(&core, &mut module_args);
+            let mut module_args = args.clone();
+            startup_fn(core, &mut module_args);
 
-            library_table.insert(module, library);
+            libraries.push(Module { path: module_path, module: library });
         }
     }
 
@@ -292,7 +406,7 @@ fn load_modules_linux(
         println!("Failed to load {} module(s)!", failed_modules);
     }
 
-    return Ok(library_table);
+    return Ok(libraries);
 }
 
 #[cfg(target_os = "windows")]
@@ -342,17 +456,54 @@ fn unload_modules_windows(
 }
 
 #[cfg(target_os = "linux")]
+fn unload_module_linux(
+    core: &CoreH,
+    library: Module,
+) -> Result<(), ModuleError> {
+    unsafe {
+        let shutdown_fn: Symbol<extern "C" fn(core: &CoreH)>;
+
+        match library.module.get(b"module_shutdown\0") {
+            Ok(func) => shutdown_fn = func,
+            Err(msg) => {
+                return Err(ModuleError::UnloadError(String::from(
+                    format!(
+                        "Failed to find module_shutdown function in {:?}: {:?}",
+                        library.path.file_stem().unwrap(),
+                        msg
+                    )
+                )));
+            }
+        }
+
+        shutdown_fn(core);
+    }
+
+    if let Err(msg) = library.module.close() {
+        return Err(ModuleError::UnloadError(String::from(
+            format!(
+                "Failed to unload module {:?}: {:?}",
+                library.path.file_stem().unwrap(),
+                msg
+            )
+        )));
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
 fn unload_modules_linux(
-    core: &core_header::CoreH,
-    mut library_table: HashMap<PathBuf, Library>,
+    core: &CoreH,
+    libraries: Vec<Module>,
 ) -> Result<(), ModuleError> {
     let mut failed_modules: usize = 0;
 
-    for (_module_path, handle) in library_table.iter() {
+    for library in libraries.iter() {
         unsafe {
-            let shutdown_fn: Symbol<extern "C" fn(core: &core_header::CoreH)>;
+            let shutdown_fn: Symbol<extern "C" fn(core: &CoreH)>;
 
-            match handle.get(b"module_shutdown\0") {
+            match library.module.get(b"module_shutdown\0") {
                 Ok(func) => shutdown_fn = func,
                 Err(msg) => {
                     failed_modules += 1;
@@ -365,21 +516,18 @@ fn unload_modules_linux(
         }
     }
 
-    let len = library_table.len();
+    let len = libraries.len();
 
-    for _i in 0..len {
-        let key = library_table.keys().next().unwrap().clone();
-        let handle = library_table.remove(&key).unwrap();
-
-        if let Err(msg) = handle.close() {
+    for library in libraries {
+        if let Err(msg) = library.module.close() {
             failed_modules += 1;
-            println!("Failed to unload library {:?}: {:?}", key, msg);
+            println!("Failed to unload library {:?}: {:?}", library.path.file_stem().unwrap(), msg);
             continue;
         }
     }
 
     if failed_modules == len {
-        return Err(ModuleError::AllModuleUnloadError(format!(
+        return Err(ModuleError::UnloadError(String::from(
             "All modules failed to unload!"
         )));
     } else if failed_modules > 0 {
@@ -393,71 +541,86 @@ fn ping_core() {
 }
 
 fn main() {
-    let args = args().collect::<Vec<_>>();
-    let mut seperated_args = HashMap::new();
-    let mut last_main_arg = "";
+    let mut main_args = args().collect::<VecDeque<_>>();
 
-    for (i, arg) in args.iter().enumerate() {
-        if i == 0 && !arg.contains('+') {
+    let first_arg = main_args.pop_front().unwrap();
+    let mut global_args: Option<Vec<String>> = None;
+
+    let mut seperated_args: IndexMap<String, Vec<String>> = IndexMap::new();
+    let mut last_main_arg = String::from("");
+
+    for _i in 0..main_args.len() {
+        let arg = main_args.pop_front().unwrap();
+
+        if seperated_args.is_empty() && !arg.contains('+') {
+            if global_args.is_none() {
+                global_args = Some(Vec::new());
+            }
+
+            global_args.as_mut().unwrap().push(arg);
             continue;
-        }
-
-        if i == 1 && !arg.contains('+') {
-            println!("Wrong argument format provided");
-            println!("{arg}");
-            return;
-        }
-        else if i == 1 {
-            last_main_arg = arg;
         }
 
         if arg.contains('+') {
-            seperated_args.insert(arg.clone(), Vec::new());
-            last_main_arg = arg;
+            last_main_arg = String::from(arg.strip_prefix('+').unwrap());
+            seperated_args.insert(String::from(arg.to_owned().strip_prefix('+').unwrap()), Vec::new());
             continue;
         }
         
-        if seperated_args.contains_key(last_main_arg) {
-            seperated_args.get_mut(last_main_arg).unwrap().push(arg.clone());
+        if seperated_args.contains_key(&last_main_arg) {
+            seperated_args.get_mut(&last_main_arg).unwrap().push(arg);
         }
     }
 
-    if let Some(core_args) = seperated_args.get("+core") {
-        if core_args.contains(&String::from("ping")) {
-            ping_core();
-        }
-    }
-
-    let core_header = core_header::CoreH {
+    let core = CoreH {
         ping_core_f: ping_core,
     };
 
-    let modules;
-    #[cfg(target_os = "windows")]
-    match load_modules_windows(&core_header, &seperated_args) {
-        Ok(data) => modules = data,
-        Err(msg) => {
+    if global_args.is_some() {
+        global_args.as_mut().unwrap().insert(0, first_arg.clone());
+
+        if global_args.as_ref().unwrap().contains(&String::from("ping")) {
+            ping_core();
+        }
+
+        let libraries;
+
+        match load_modules_linux(&core, global_args.as_ref().unwrap()) {
+            Ok(libs) => libraries = libs,
+            Err(msg) => {
+                println!("{:?}", msg);
+                return;
+            },
+        }
+
+        if let Err(msg) = unload_modules_linux(&core, libraries) {
             println!("{:?}", msg);
-            return;
         }
     }
 
-    #[cfg(target_os = "linux")]
-    match load_modules_linux(&core_header, &seperated_args) {
-        Ok(data) => modules = data,
-        Err(msg) => {
-            println!("{:?}", msg);
-            return;
+    for (module_name, mut args) in seperated_args {
+        args.insert(0, first_arg.clone());
+
+        if module_name == "core" {
+            if args.contains(&String::from("ping")) {
+                ping_core();
+            }
+            continue;
         }
-    }
 
-    #[cfg(target_os = "windows")]
-    if let Err(msg) = unload_modules_windows(&core_header, modules) {
-        println!("{:?}", msg);
-    }
-
-    #[cfg(target_os = "linux")]
-    if let Err(msg) = unload_modules_linux(&core_header, modules) {
-        println!("{:?}", msg);
+        match load_module_linux(&module_name) {
+            Ok(module) => {
+                if let Err(msg) = module.start(&core, &mut args) {
+                    println!("{:?}", msg);
+                }
+                if let Err(msg) = unload_module_linux(&core, module) {
+                    println!("{:?}", msg);
+                }
+            },
+            Err(msg) => {
+                println!("{:?}", msg);
+                continue;
+            },
+        }
     }
 }
