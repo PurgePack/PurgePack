@@ -19,43 +19,6 @@ use windows::{
     core::{PCSTR, PCWSTR},
 };
 
-#[cfg(target_os = "linux")]
-#[derive(Debug)]
-struct Module {
-    path: PathBuf,
-    library: Library,
-}
-
-impl Module {
-    fn start(&self, core: &CoreH, args: &mut Vec<String>) -> Result<(), ModuleError> {
-        let startup_fn: Symbol<extern "C" fn(core: &CoreH, args: &mut Vec<String>)>;
-
-        unsafe {
-            match self.library.get(b"module_startup\0") {
-                Ok(func) => startup_fn = func,
-                Err(msg) => {
-                    return Err(ModuleError::LoadError(String::from(
-                        format!(
-                            "Failed to find module_startup function in {:?}: {:?}",
-                            self.path.file_stem().unwrap(),
-                            msg
-                        )
-                    )));
-                }
-            }
-        }
-
-        startup_fn(core, args);
-        Ok(())
-    }
-}
-
-#[cfg(target_os = "windows")]
-struct Module {
-    path: PathBuf,
-    module: HMODULE,
-}
-
 #[derive(Debug, PartialEq, Eq)]
 enum ModuleError {
     LoadError(String),
@@ -77,15 +40,77 @@ impl fmt::Display for ModuleError {
 
 impl Error for ModuleError {}
 
-#[cfg(target_os = "windows")]
-fn load_modules_windows(
-    core: &core_header::CoreH,
-    seperated_args: &HashMap<String, Vec<String>>,
-) -> Result<HashMap<PathBuf, HMODULE>, ModuleError> {
-    use std::{collections::HashMap, fs, path::PathBuf};
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct Module {
+    path: PathBuf,
+    library: Library,
+}
 
-    let mut dll_name: Vec<Vec<u16>> = Vec::new();
-    let mut readable_dll_path = Vec::new();
+#[cfg(target_os = "windows")]
+struct Module {
+    path: PathBuf,
+    library_handle: HMODULE,
+}
+
+impl Module {
+    #[cfg(target_os = "linux")]
+    fn start(&self, core: &CoreH, args: &mut Vec<String>) -> Result<(), ModuleError> {
+        let startup_fn: Symbol<extern "C" fn(core: &CoreH, args: &mut Vec<String>)>;
+
+        unsafe {
+            match self.library.get(b"module_startup\0") {
+                Ok(func) => startup_fn = func,
+                Err(msg) => {
+                    return Err(ModuleError::LoadError(String::from(
+                        format!(
+                            "Failed to find module_startup function in {:?}: {:?}",
+                            self.path.file_stem().unwrap(),
+                            msg
+                        )
+                    )));
+                }
+            }
+        }
+
+        startup_fn(core, args);
+        Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    fn start(&self, core: &CoreH, args: &mut Vec<String>) -> Result<(), ModuleError> {
+        let startup_fn: extern "C" fn(core: &CoreH, args: &mut Vec<String>);
+
+        unsafe {
+            let func_name_c = std::ffi::CString::new("module_startup").expect("CString::new failed");
+            let func_ptr =
+                GetProcAddress(self.library_handle, PCSTR(func_name_c.as_ptr() as *const u8));
+
+            if func_ptr.is_none() {
+                return Err(ModuleError::LoadError(String::from(
+                    format!(
+                        "Failed to find module_startup function in {:?}.",
+                        self.path.file_stem().unwrap(),
+                    )
+                )));
+            }
+
+            startup_fn = std::mem::transmute(func_ptr);
+        }
+
+        startup_fn(core, args);
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn load_module_windows(
+    module_name: &String,
+) -> Result<Module, ModuleError> {
+    use std::{fs};
+
+    let mut library_file: Option<Vec<u16>> = None;
+    let mut readable_library_file: Option<PathBuf> = None;
 
     let paths;
 
@@ -93,13 +118,120 @@ fn load_modules_windows(
         Ok(data) => paths = data,
         Err(msg) => {
             if let Err(msg2) = fs::create_dir("modules") {
-                return Err(ModuleError::FileSystemError(format!(
+                return Err(ModuleError::LoadError(format!(
                     "Failed to create module folder: {:?}",
                     msg2
                 )));
             }
 
-            return Err(ModuleError::AllModuleLoadError(format!(
+            return Err(ModuleError::LoadError(format!(
+                "Module folder (\"module\') was missing and has been created: {:?}",
+                msg
+            )));
+        }
+    }
+
+    for path in paths {
+        let checked_path;
+
+        match path {
+            Ok(data) => checked_path = data,
+            Err(_) => continue,
+        }
+
+        let file_type;
+
+        match checked_path.file_type() {
+            Ok(data) => file_type = data,
+            Err(_) => continue,
+        }
+
+        if !file_type.is_file() {
+            continue;
+        }
+
+        match checked_path.path().extension() {
+            Some(data) => {
+                if data.to_ascii_lowercase() != "dll" {
+                    continue;
+                }
+            }
+            None => continue,
+        }
+
+        match checked_path.path().file_stem() {
+            Some(file_name) => {
+                if let Some(f_name) = file_name.to_str()
+                && f_name == module_name {
+                    library_file = Some(
+                        checked_path
+                            .path()
+                            .to_str()
+                            .unwrap()
+                            .encode_utf16()
+                            .chain(std::iter::once(0))
+                            .collect(),
+                    );
+                    readable_library_file = Some(checked_path.path());
+                    break;
+                }
+                continue;
+            },
+            None => continue,
+        }
+    }
+
+    if library_file.is_none() || readable_library_file.is_none() {
+        return Err(ModuleError::LoadError(format!("Module {} not found!", module_name)));
+    }
+
+    let library_handle;
+
+    unsafe {
+        match LoadLibraryW(PCWSTR(library_file.unwrap().as_ptr())) {
+            Ok(data) => {
+                library_handle = data;
+            }
+            Err(msg) => {
+                return Err(ModuleError::LoadError(String::from(
+                    format!("Module {} failed to load: {:?}", module_name, msg)
+                )));
+            }
+        }
+
+        if library_handle.is_invalid() {
+            return Err(ModuleError::LoadError(String::from(
+                format!("Module {} failed to load!", module_name)
+            )));
+        }
+    }
+
+    return Ok(Module { path: readable_library_file.unwrap(), library_handle });
+}
+
+#[cfg(target_os = "windows")]
+fn load_modules_windows(
+    core: &CoreH,
+    args: &Vec<String>,
+) -> Result<Vec<Module>, ModuleError> {
+    use std::{fs};
+
+    let mut library_name: Vec<Vec<u16>> = Vec::new();
+    let mut readable_library_path = Vec::new();
+
+    let paths;
+
+    match fs::read_dir("modules") {
+        Ok(data) => paths = data,
+        Err(msg) => {
+            if let Err(msg2) = fs::create_dir("modules") {
+                return Err(ModuleError::LoadError(format!(
+                    "Failed to create module folder: {:?}",
+                    msg2
+                )));
+            }
+
+            return Err(ModuleError::LoadError(format!(
                 "Module folder (\"module\') was missing and has been created: {:?}",
                 msg
             )));
@@ -138,7 +270,7 @@ fn load_modules_windows(
 
         number_of_modules += 1;
 
-        dll_name.push(
+        library_name.push(
             real_path
                 .path()
                 .to_str()
@@ -147,17 +279,17 @@ fn load_modules_windows(
                 .chain(std::iter::once(0))
                 .collect(),
         );
-        readable_dll_path.push(real_path.path());
+        readable_library_path.push(real_path.path());
     }
 
     if number_of_modules <= 0 {
-        return Err(ModuleError::FileSystemError(format!("Found no modules!")));
+        return Err(ModuleError::LoadError(String::from("Found no modules!")));
     }
 
     let mut failed_modules: usize = 0;
-    let mut dll_table: HashMap<PathBuf, HMODULE> = HashMap::new();
+    let mut libraries: Vec<Module> = Vec::new();
 
-    for module in dll_name.iter().enumerate() {
+    for module in library_name.iter().enumerate() {
         unsafe {
             let handle;
 
@@ -188,23 +320,16 @@ fn load_modules_windows(
                 continue;
             }
 
-            let startup_fn: extern "C" fn(core: &core_header::CoreH, args: &mut Vec<String>) =
+            let startup_fn: extern "C" fn(core: &CoreH, args: &mut Vec<String>) =
                 std::mem::transmute(func_ptr);
-            let mut module_args: Vec<String>;
-
-            let module_name = format!("+{}", readable_dll_path[module.0].file_stem().unwrap()
-                .to_str().unwrap());
-
-            if let Some(args) = seperated_args.get(&module_name) {
-                module_args = args.clone();
-            }
-            else {
-                module_args = Vec::new();
-            }
+            let mut module_args = args.clone();
 
             startup_fn(&core, &mut module_args);
 
-            dll_table.insert(readable_dll_path[module.0].clone(), handle);
+            libraries.push(Module {
+                path: readable_library_path[module.0].clone(),
+                library_handle: handle,
+            });
         }
     }
 
@@ -212,7 +337,7 @@ fn load_modules_windows(
         println!("Failed to load {} module(s)!", failed_modules);
     }
 
-    return Ok(dll_table.clone());
+    return Ok(libraries);
 }
 
 #[cfg(target_os = "linux")]
@@ -410,17 +535,59 @@ fn load_modules_linux(
 }
 
 #[cfg(target_os = "windows")]
+fn unload_module_windows(
+    core: &CoreH,
+    module: Module,
+) -> Result<(), ModuleError> {
+    unsafe {
+        let func_name_c =
+            std::ffi::CString::new("module_shutdown").expect("CString::new failed");
+        let func_ptr =
+            GetProcAddress(module.library_handle, PCSTR(func_name_c.as_ptr() as *const u8));
+
+        if func_ptr.is_none() {
+            return Err(ModuleError::UnloadError(String::from(
+                format!(
+                    "Failed to find module_shutdown function in {:?}!",
+                    module.path.file_stem().unwrap(),
+                )
+            )));
+        }
+
+        let shutdown_fn: extern "system" fn(core: &CoreH) =
+            std::mem::transmute(func_ptr);
+
+        shutdown_fn(core);
+    }
+
+    unsafe {
+        if let Err(msg) = FreeLibrary(module.library_handle) {
+            return Err(ModuleError::UnloadError(String::from(
+                format!(
+                    "Failed to unload module {:?}: {:?}",
+                    module.path.file_stem().unwrap(),
+                    msg
+                )
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
 fn unload_modules_windows(
-    core: &core_header::CoreH,
-    dll_table: HashMap<PathBuf, HMODULE>,
+    core: &CoreH,
+    modules: Vec<Module>,
 ) -> Result<(), ModuleError> {
     let mut failed_modules: usize = 0;
 
-    for (_module_path, handle) in dll_table.iter() {
+    for module in modules.iter() {
         unsafe {
             let func_name_c =
                 std::ffi::CString::new("module_shutdown").expect("CString::new failed");
-            let func_ptr = GetProcAddress(*handle, PCSTR(func_name_c.as_ptr() as *const u8));
+            let func_ptr =
+                GetProcAddress(module.library_handle, PCSTR(func_name_c.as_ptr() as *const u8));
 
             if func_ptr.is_none() {
                 failed_modules += 1;
@@ -428,25 +595,28 @@ fn unload_modules_windows(
                 continue;
             }
 
-            let shutdown_fn: extern "system" fn(core: &core_header::CoreH) =
+            let shutdown_fn: extern "system" fn(core: &CoreH) =
                 std::mem::transmute(func_ptr);
 
             shutdown_fn(core);
         }
     }
 
-    for (module_path, handle) in dll_table.iter() {
+    for modules in modules.iter() {
         unsafe {
-            if let Err(msg) = FreeLibrary(*handle) {
+            if let Err(msg) = FreeLibrary(modules.library_handle) {
                 failed_modules += 1;
-                println!("Failed to unload library {:?}: {:?}", module_path, msg);
+                println!("Failed to unload library {:?}: {:?}",
+                    modules.path.file_stem().unwrap(),
+                    msg
+                );
                 continue;
             }
         }
     }
 
-    if failed_modules == dll_table.len() {
-        return Err(ModuleError::AllModuleUnloadError(format!(
+    if failed_modules == modules.len() {
+        return Err(ModuleError::UnloadError(format!(
             "All modules failed to unload!"
         )));
     } else if failed_modules > 0 {
@@ -458,18 +628,18 @@ fn unload_modules_windows(
 #[cfg(target_os = "linux")]
 fn unload_module_linux(
     core: &CoreH,
-    library: Module,
+    module: Module,
 ) -> Result<(), ModuleError> {
     unsafe {
         let shutdown_fn: Symbol<extern "C" fn(core: &CoreH)>;
 
-        match library.library.get(b"module_shutdown\0") {
+        match module.library.get(b"module_shutdown\0") {
             Ok(func) => shutdown_fn = func,
             Err(msg) => {
                 return Err(ModuleError::UnloadError(String::from(
                     format!(
                         "Failed to find module_shutdown function in {:?}: {:?}",
-                        library.path.file_stem().unwrap(),
+                        module.path.file_stem().unwrap(),
                         msg
                     )
                 )));
@@ -479,11 +649,11 @@ fn unload_module_linux(
         shutdown_fn(core);
     }
 
-    if let Err(msg) = library.library.close() {
+    if let Err(msg) = module.library.close() {
         return Err(ModuleError::UnloadError(String::from(
             format!(
                 "Failed to unload module {:?}: {:?}",
-                library.path.file_stem().unwrap(),
+                module.path.file_stem().unwrap(),
                 msg
             )
         )));
@@ -495,15 +665,15 @@ fn unload_module_linux(
 #[cfg(target_os = "linux")]
 fn unload_modules_linux(
     core: &CoreH,
-    libraries: Vec<Module>,
+    modules: Vec<Module>,
 ) -> Result<(), ModuleError> {
     let mut failed_modules: usize = 0;
 
-    for library in libraries.iter() {
+    for module in modules.iter() {
         unsafe {
             let shutdown_fn: Symbol<extern "C" fn(core: &CoreH)>;
 
-            match library.library.get(b"module_shutdown\0") {
+            match module.library.get(b"module_shutdown\0") {
                 Ok(func) => shutdown_fn = func,
                 Err(msg) => {
                     failed_modules += 1;
@@ -516,12 +686,12 @@ fn unload_modules_linux(
         }
     }
 
-    let len = libraries.len();
+    let len = modules.len();
 
-    for library in libraries {
-        if let Err(msg) = library.library.close() {
+    for module in modules {
+        if let Err(msg) = module.library.close() {
             failed_modules += 1;
-            println!("Failed to unload library {:?}: {:?}", library.path.file_stem().unwrap(), msg);
+            println!("Failed to unload library {:?}: {:?}", module.path.file_stem().unwrap(), msg);
             continue;
         }
     }
@@ -585,6 +755,16 @@ fn main() {
 
         let libraries;
 
+        #[cfg(target_os = "windows")]
+        match load_modules_windows(&core, global_args.as_ref().unwrap()) {
+            Ok(libs) => libraries = libs,
+            Err(msg) => {
+                println!("{:?}", msg);
+                return;
+            },
+        }
+
+        #[cfg(target_os = "linux")]
         match load_modules_linux(&core, global_args.as_ref().unwrap()) {
             Ok(libs) => libraries = libs,
             Err(msg) => {
@@ -593,6 +773,12 @@ fn main() {
             },
         }
 
+        #[cfg(target_os = "windows")]
+        if let Err(msg) = unload_modules_windows(&core, libraries) {
+            println!("{:?}", msg);
+        }
+
+        #[cfg(target_os = "linux")]
         if let Err(msg) = unload_modules_linux(&core, libraries) {
             println!("{:?}", msg);
         }
@@ -608,6 +794,23 @@ fn main() {
             continue;
         }
 
+        #[cfg(target_os = "windows")]
+        match load_module_windows(&module_name) {
+            Ok(module) => {
+                if let Err(msg) = module.start(&core, &mut args) {
+                    println!("{:?}", msg);
+                }
+                if let Err(msg) = unload_module_windows(&core, module) {
+                    println!("{:?}", msg);
+                }
+            },
+            Err(msg) => {
+                println!("{:?}", msg);
+                continue;
+            },
+        }
+
+        #[cfg(target_os = "linux")]
         match load_module_linux(&module_name) {
             Ok(module) => {
                 if let Err(msg) = module.start(&core, &mut args) {
