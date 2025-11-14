@@ -23,7 +23,7 @@ use windows::{
 #[derive(Debug)]
 struct Module {
     path: PathBuf,
-    module: Library,
+    library: Library,
 }
 
 impl Module {
@@ -31,7 +31,7 @@ impl Module {
         let startup_fn: Symbol<extern "C" fn(core: &CoreH, args: &mut Vec<String>)>;
 
         unsafe {
-            match self.module.get(b"module_startup\0") {
+            match self.library.get(b"module_startup\0") {
                 Ok(func) => startup_fn = func,
                 Err(msg) => {
                     return Err(ModuleError::LoadError(String::from(
@@ -299,7 +299,7 @@ fn load_module_linux(
         }
     }
 
-    return Ok(Module { path: library_file.unwrap(), module: library });
+    return Ok(Module { path: library_file.unwrap(), library });
 }
 
 #[cfg(target_os = "linux")]
@@ -398,7 +398,7 @@ fn load_modules_linux(
             let mut module_args = args.clone();
             startup_fn(core, &mut module_args);
 
-            libraries.push(Module { path: module_path, module: library });
+            libraries.push(Module { path: module_path, library });
         }
     }
 
@@ -463,7 +463,7 @@ fn unload_module_linux(
     unsafe {
         let shutdown_fn: Symbol<extern "C" fn(core: &CoreH)>;
 
-        match library.module.get(b"module_shutdown\0") {
+        match library.library.get(b"module_shutdown\0") {
             Ok(func) => shutdown_fn = func,
             Err(msg) => {
                 return Err(ModuleError::UnloadError(String::from(
@@ -479,7 +479,7 @@ fn unload_module_linux(
         shutdown_fn(core);
     }
 
-    if let Err(msg) = library.module.close() {
+    if let Err(msg) = library.library.close() {
         return Err(ModuleError::UnloadError(String::from(
             format!(
                 "Failed to unload module {:?}: {:?}",
@@ -503,7 +503,7 @@ fn unload_modules_linux(
         unsafe {
             let shutdown_fn: Symbol<extern "C" fn(core: &CoreH)>;
 
-            match library.module.get(b"module_shutdown\0") {
+            match library.library.get(b"module_shutdown\0") {
                 Ok(func) => shutdown_fn = func,
                 Err(msg) => {
                     failed_modules += 1;
@@ -519,7 +519,7 @@ fn unload_modules_linux(
     let len = libraries.len();
 
     for library in libraries {
-        if let Err(msg) = library.module.close() {
+        if let Err(msg) = library.library.close() {
             failed_modules += 1;
             println!("Failed to unload library {:?}: {:?}", library.path.file_stem().unwrap(), msg);
             continue;
