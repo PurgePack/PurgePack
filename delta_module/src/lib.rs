@@ -2,11 +2,9 @@ use std::{
     fs::File,
     io::{self, BufRead, Read, Write},
     path::{self},
-    time::Instant,
 };
 mod cli_parse;
 use shared_files::core_header::{self};
-use shared_files::stats::CompressionStats;
 
 /// The direction of the transformation (Encode or Decode).
 #[derive(Debug, Clone, Copy)]
@@ -125,6 +123,7 @@ extern "C" fn module_startup(_core: &core_header::CoreH, args: &mut Vec<String>)
 extern "C" fn module_shutdown(_core: &core_header::CoreH) {
     println!("Delta encoder module shutting down.");
 }
+
 /// Initializes the file handles and coordinates the chunk-by-chunk delta transformation.
 ///
 /// This function opens the input and output files, handles the initial "seed" byte,
@@ -136,7 +135,7 @@ extern "C" fn module_shutdown(_core: &core_header::CoreH) {
 /// * `input_file` - The path to the source file.
 /// * `output_file` - The path to the destination file.
 /// * `transform_type` - The direction of the operation (`Encode` or `Decode`).
-/// * `_stats` - A boolean flag for statistics calculation (currently unused).
+/// * `stats` - A boolean flag for statistics calculation.
 ///
 /// # Errors
 ///
@@ -148,6 +147,8 @@ fn start_proccessing_file(
     transform_type: Transform,
     stats: bool,
 ) -> Result<(), io::Error> {
+    let mut main_timer = shared_files::stats::OptinalStatsTimer::new(stats);
+
     if let Transform::Decode = transform_type {
         let has_correct_extension = input_file.extension().map_or(false, |ext| {
             ext.to_string_lossy().eq_ignore_ascii_case(FILE_EXTENSION)
@@ -164,9 +165,9 @@ fn start_proccessing_file(
             ));
         }
     }
+
     if let Transform::Encode = transform_type {
         // If the output path has no extension, append the required .ppcb extension.
-        // This ensures the encoded file is correctly labeled for later decoding.
         if output_file.extension().is_none() {
             output_file.set_extension(FILE_EXTENSION);
             println!(
@@ -182,8 +183,7 @@ fn start_proccessing_file(
     let mut buff_reader = std::io::BufReader::new(input);
     let mut buff_writer = std::io::BufWriter::new(output);
     let mut previous_byte: u8;
-
-    let start_time = Instant::now();
+    let t_header = main_timer.start_section("Header Read/Write");
     match transform_type {
         Transform::Encode => write_header(&mut buff_writer)?,
         Transform::Decode => {
@@ -192,30 +192,35 @@ fn start_proccessing_file(
         }
     }
 
+    main_timer.add_section(t_header);
+
+    let t_seed = main_timer.start_section("Seed Byte Read/Write");
     previous_byte = match set_delta_seed(&mut buff_reader, &mut buff_writer) {
         Ok(Some(value)) => value,
         Ok(None) => {
             buff_writer.flush()?;
+            let (total_duration, sections) = main_timer.end();
             if stats {
-                let duration = start_time.elapsed();
                 let output_len = buff_writer.get_ref().metadata()?.len() as usize;
-
-                let calculated_stats = CompressionStats::calculate_stats(
-                    "Delta Transform",
-                    MODULE_ID,
-                    1,
-                    original_len,
-                    output_len,
-                    duration,
-                    matches!(transform_type, Transform::Encode),
-                );
+                let calculated_stats = shared_files::stats::CompressionStatsBuilder::new()
+                    .algorithm_name("First-Order Delta Transform")
+                    .algorithm_id(MODULE_ID)
+                    .version_used(1)
+                    .original_len(original_len)
+                    .processed_len(output_len)
+                    .duration(total_duration)
+                    .is_compression(matches!(transform_type, Transform::Encode))
+                    .sections(sections)
+                    .build()
+                    .unwrap_or_else(|e| panic!("Failed to build stats for empty file: {}", e));
                 println!("{}", calculated_stats);
             }
             return Ok(());
         }
         Err(e) => return Err(e),
     };
-
+    main_timer.add_section(t_seed);
+    let t_process = main_timer.start_section("Main Chunk Processing");
     loop {
         let current_chunk = buff_reader.fill_buf()?;
         let chunk_length = current_chunk.len();
@@ -230,21 +235,23 @@ fn start_proccessing_file(
         )?;
         buff_reader.consume(chunk_length);
     }
-
+    main_timer.add_section(t_process);
     buff_writer.flush()?;
+    let (total_duration, sections) = main_timer.end();
     if stats {
-        let duration = start_time.elapsed();
         let output_len = buff_writer.get_ref().metadata()?.len() as usize;
+        let calculated_stats = shared_files::stats::CompressionStatsBuilder::new()
+            .algorithm_name("First-Order Delta Transform")
+            .algorithm_id(MODULE_ID)
+            .version_used(1)
+            .original_len(original_len)
+            .processed_len(output_len)
+            .duration(total_duration)
+            .is_compression(matches!(transform_type, Transform::Encode))
+            .sections(sections)
+            .build()
+            .unwrap_or_else(|e| panic!("Failed to build stats: {}", e));
 
-        let calculated_stats = CompressionStats::calculate_stats(
-            "Delta Transform",
-            MODULE_ID,
-            1,
-            original_len,
-            output_len,
-            duration,
-            matches!(transform_type, Transform::Encode),
-        );
         println!("{}", calculated_stats);
     }
     Ok(())
