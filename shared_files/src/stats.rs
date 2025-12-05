@@ -27,11 +27,28 @@
 //! measurement and the flexible [`OptinalStatsTimer`] for detailed, conditional step timing.
 //!
 //! ```rust
-//! use crate::stats::{
+//! use shared_files::stats::{
 //!     StatsTimer, OptinalStatsTimer, CompressionStatsBuilder, SectionStats, BuilderError,
 //!     CompressionStats
 //! };
 //! use std::time::Duration;
+//! # const KIB: usize = 1024;
+//! # const MIB: usize = KIB * 1024;
+//! # const GIB: usize = MIB * 1024;
+//! # const TIB: usize = GIB * 1024;
+//! # fn format_bytes(bytes: usize) -> String {
+//! #     if bytes >= TIB {
+//! #         format!("{:.2} TiB", bytes as f64 / TIB as f64)
+//! #     } else if bytes >= GIB {
+//! #         format!("{:.2} GiB", bytes as f64 / GIB as f64)
+//! #     } else if bytes >= MIB {
+//! #         format!("{:.2} MiB", bytes as f64 / MIB as f64)
+//! #     } else if bytes >= KIB {
+//! #         format!("{:.2} KiB", bytes as f64 / KIB as f64)
+//! #     } else {
+//! #         format!("{} Bytes", bytes)
+//! #     }
+//! # }
 //!
 //! /// Runs a data processing operation, collecting stats based on the 'is_stats_enabled' flag.
 //! fn run_operation(input_data: &[u8], is_stats_enabled: bool) -> Result<CompressionStats, BuilderError> {
