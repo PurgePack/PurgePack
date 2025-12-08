@@ -104,7 +104,7 @@ impl Module {
 }
 
 #[cfg(target_os = "windows")]
-fn load_module_windows(
+fn load_module(
     module_name: &String,
 ) -> Result<Module, ModuleError> {
     use std::{fs};
@@ -210,7 +210,7 @@ fn load_module_windows(
 }
 
 #[cfg(target_os = "windows")]
-fn load_modules_windows(
+fn load_modules(
     core: &CoreH,
     args: &Vec<String>,
 ) -> Result<Vec<Module>, ModuleError> {
@@ -341,7 +341,7 @@ fn load_modules_windows(
 }
 
 #[cfg(target_os = "linux")]
-fn load_module_linux(
+fn load_module(
     module_name: &String,
 ) -> Result<Module, ModuleError> {
     use std::{fs, path::PathBuf};
@@ -428,7 +428,7 @@ fn load_module_linux(
 }
 
 #[cfg(target_os = "linux")]
-fn load_modules_linux(
+fn load_modules(
     core: &CoreH,
     args: &Vec<String>,
 ) -> Result<Vec<Module>, ModuleError> {
@@ -535,7 +535,7 @@ fn load_modules_linux(
 }
 
 #[cfg(target_os = "windows")]
-fn unload_module_windows(
+fn unload_module(
     core: &CoreH,
     module: Module,
 ) -> Result<(), ModuleError> {
@@ -576,7 +576,7 @@ fn unload_module_windows(
 }
 
 #[cfg(target_os = "windows")]
-fn unload_modules_windows(
+fn unload_modules(
     core: &CoreH,
     modules: Vec<Module>,
 ) -> Result<(), ModuleError> {
@@ -626,7 +626,7 @@ fn unload_modules_windows(
 }
 
 #[cfg(target_os = "linux")]
-fn unload_module_linux(
+fn unload_module(
     core: &CoreH,
     module: Module,
 ) -> Result<(), ModuleError> {
@@ -663,7 +663,7 @@ fn unload_module_linux(
 }
 
 #[cfg(target_os = "linux")]
-fn unload_modules_linux(
+fn unload_modules(
     core: &CoreH,
     modules: Vec<Module>,
 ) -> Result<(), ModuleError> {
@@ -755,8 +755,7 @@ fn main() {
 
         let libraries;
 
-        #[cfg(target_os = "windows")]
-        match load_modules_windows(&core, global_args.as_ref().unwrap()) {
+        match load_modules(&core, global_args.as_ref().unwrap()) {
             Ok(libs) => libraries = libs,
             Err(msg) => {
                 println!("{:?}", msg);
@@ -764,22 +763,7 @@ fn main() {
             },
         }
 
-        #[cfg(target_os = "linux")]
-        match load_modules_linux(&core, global_args.as_ref().unwrap()) {
-            Ok(libs) => libraries = libs,
-            Err(msg) => {
-                println!("{:?}", msg);
-                return;
-            },
-        }
-
-        #[cfg(target_os = "windows")]
-        if let Err(msg) = unload_modules_windows(&core, libraries) {
-            println!("{:?}", msg);
-        }
-
-        #[cfg(target_os = "linux")]
-        if let Err(msg) = unload_modules_linux(&core, libraries) {
+        if let Err(msg) = unload_modules(&core, libraries) {
             println!("{:?}", msg);
         }
     }
@@ -794,29 +778,12 @@ fn main() {
             continue;
         }
 
-        #[cfg(target_os = "windows")]
-        match load_module_windows(&module_name) {
+        match load_module(&module_name) {
             Ok(module) => {
                 if let Err(msg) = module.start(&core, &mut args) {
                     println!("{:?}", msg);
                 }
-                if let Err(msg) = unload_module_windows(&core, module) {
-                    println!("{:?}", msg);
-                }
-            },
-            Err(msg) => {
-                println!("{:?}", msg);
-                continue;
-            },
-        }
-
-        #[cfg(target_os = "linux")]
-        match load_module_linux(&module_name) {
-            Ok(module) => {
-                if let Err(msg) = module.start(&core, &mut args) {
-                    println!("{:?}", msg);
-                }
-                if let Err(msg) = unload_module_linux(&core, module) {
+                if let Err(msg) = unload_module(&core, module) {
                     println!("{:?}", msg);
                 }
             },
